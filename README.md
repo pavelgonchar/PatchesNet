@@ -39,7 +39,7 @@ for id in ids[15:16]:
 ```
 
 
-![png](output_0_0.png)
+![png](images/output_0_0.png)
 
 
 
