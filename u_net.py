@@ -73,7 +73,6 @@ def bce_dice_loss(y_true, y_pred):
     return 1 - dice_loss(y_true, y_pred)
     #return 1 -jaccard_coef(y_true, y_pred)
 
-
 def get_unet_128(input_shape=(128, 128, 3),
                  num_classes=1):
     inputs = Input(shape=input_shape)
@@ -311,9 +310,9 @@ def get_unet_256(input_shape=(256, 256, 3),
 
     model = Model(inputs=inputs, outputs=classify)
 
-    model = to_multi_gpu(model,n_gpus=8)
+    #model = to_multi_gpu(model,n_gpus=8)
 
-    model.compile(optimizer=SGD(lr=0.01, momentum=0.9), loss=bce_dice_loss, metrics=[dice_loss])
+    model.compile(optimizer=SGD(lr=0.01, momentum=0.9), loss=bce_dice_loss, metrics=[dice_loss, dice_loss100])
 
     return model
 
