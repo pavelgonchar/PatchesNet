@@ -12,17 +12,27 @@ from os.path import join
 import itertools
 
 TRAIN_FOLDER = '/data/pavel/carv/train_patches'
-IMGS_IDX = range(1,17)
 
-ids = list(set([(x.split('/')[-1]).split('_')[0] for x in glob.glob(join(TRAIN_FOLDER,'*_*.jpg'))]))
+train_files = glob.glob(join(TRAIN_FOLDER,'*_*.jpg'))
+
+cars = list(set([(x.split('/')[-1]).split('.')[0].split('_')[0]  for x in train_files]))
+cars.sort()
+
+cars_train, cars_valid = train_test_split(cars, test_size=0.1, random_state=13)
+
+ids = list([(x.split('/')[-1]).split('.')[0].split('_')[:3] for x in train_files])
 ids.sort()
 
-ids_train_split, ids_valid_split = train_test_split(ids, test_size=0.1, random_state=13)
+ids_train_split = []
+ids_valid_split = []
 
-# todo glob all matching filenames for cars...
-assert False
-
-ids_valid_split = list(itertools.product(ids_valid_split, IMGS_IDX))
+for car, id_patch in itertools.groupby(ids, lambda x: x[0]):
+  if car in cars_train:
+    for idx in id_patch:
+      ids_train_split.append('_'.join(idx))
+  else:
+    for idx in id_patch:
+      ids_valid_split.append('_'.join(idx))
 
 input_size = 256
 batch_size = 16
