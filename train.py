@@ -150,12 +150,12 @@ callbacks = [EarlyStopping(monitor='val_dice_loss100',
                                epsilon=1e-4,
                                mode='max'),
              ModelCheckpoint(monitor='val_dice_loss100',
-                             filepath='weights/patchesnet_unet128_noaug_sym_pad',
+                             filepath='weights/patchesnet_unet256_noaug_sym_pad',
                              save_best_only=True,
                              save_weights_only=True,
                              mode='max')]
 
-model = get_unet_128(input_shape=(input_size, input_size, 3))
+model = get_unet_256(input_shape=(input_size, input_size, 3))
 # model.load_weights(filepath='weights/patchesnet_v1', by_name=True)
 model.fit_generator(generator=train_generator(),
                     steps_per_epoch=np.ceil(
