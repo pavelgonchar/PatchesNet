@@ -7,17 +7,26 @@ import glob
 from u_net import get_unet_128, get_unet_256, get_unet_512, get_unet_1024
 import os
 import scipy.misc as misc
-from random import shuffle
+import random
+from os.path import join
+import itertools
 
-ids_train = [os.path.basename(x) for x in glob.glob('/data/pavel/carv/train_patches/*.jpg')]
-ids_train = [x.split('.')[0] for x in ids_train]
-ids_train.sort()
+TRAIN_FOLDER = '/data/pavel/carv/train_patches'
+IMGS_IDX = range(1,17)
+
+ids = list(set([(x.split('/')[-1]).split('_')[0] for x in glob.glob(join(TRAIN_FOLDER,'*_*.jpg'))]))
+ids.sort()
+
+ids_train_split, ids_valid_split = train_test_split(ids, test_size=0.1, random_state=13)
+
+# todo glob all matching filenames for cars...
+assert False
+
+ids_valid_split = list(itertools.product(ids_valid_split, IMGS_IDX))
 
 input_size = 256
 batch_size = 16
 epochs = 50
-
-ids_train_split, ids_valid_split = train_test_split(ids_train, test_size=0.1, random_state=13)
 
 print('Training on {} samples'.format(len(ids_train_split)))
 print('Validating on {} samples'.format(len(ids_valid_split)))
@@ -69,8 +78,9 @@ def randomHorizontalFlip(image, mask, u=0.5):
     return image, mask
 
 def train_generator():
+    random.seed(13)
     while True:
-      shuffle(ids_train_split)
+      random.shuffle(ids_train_split)
       for start in range(0, len(ids_train_split), batch_size):
           x_batch = []
           y_batch = []
@@ -106,8 +116,8 @@ def valid_generator():
             for id in ids_valid_batch:
                 img = cv2.imread('/data/pavel/carv/train_patches/{}.jpg'.format(id))
                 img = cv2.resize(img, (input_size, input_size), interpolation=cv2.INTER_CUBIC)
-                #mask = cv2.imread('/data/pavel/carv/train_patches_mask/{}.gif'.format(id))[...,0]
-                mask = cv2.imread('/data/pavel/carv/train_patches_mask/{}.png'.format(id), cv2.IMREAD_GRAYSCALE)
+                #mask = cv2.imread('/data/pavel/carv/train_patches_masks/{}.gif'.format(id))[...,0]
+                mask = cv2.imread('/data/pavel/carv/train_patches_masks/{}.png'.format(id), cv2.IMREAD_GRAYSCALE)
                 mask = cv2.resize(mask, (input_size, input_size), interpolation=cv2.INTER_LINEAR)
                 mask = np.expand_dims(mask, axis=2)
                 x_batch.append(img)
