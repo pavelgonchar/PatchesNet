@@ -30,7 +30,7 @@ ids = [x.split('.')[0] for x in ids]
 
 for j in tqdm(range(len(ids))):
     mask = misc.imread(ROOT_DIR + '/train_masks/%s_mask.gif' %
-                      ids[j], cv2.IMREAD_GRAYSCALE)[...,0] / 255.0
+                       ids[j], cv2.IMREAD_GRAYSCALE)[..., 0] / 255.0
     mask = np.pad(mask, ((N // 2, N // 2), (N // 2, N // 2)), 'symmetric')
 
     border = np.abs(np.gradient(mask)[1]) + np.abs(np.gradient(mask)[0])
@@ -41,9 +41,6 @@ for j in tqdm(range(len(ids))):
         img, ((N // 2, N // 2), (N // 2, N // 2), (0, 0)), 'symmetric')
 
     height, width = mask.shape
-
-    patches_img = []
-    patches_mask = []
 
     i = 0
     for x, y in zip(np.nonzero(border)[0], np.nonzero(border)[1]):

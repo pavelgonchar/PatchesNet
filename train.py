@@ -13,33 +13,25 @@ import itertools
 
 TRAIN_FOLDER = '/data/pavel/carv/train_patches'
 
-train_files = glob.glob(join(TRAIN_FOLDER,'*_*.jpg'))
-
-cars = list(set([(x.split('/')[-1]).split('.')[0].split('_')[0]  for x in train_files]))
-cars.sort()
-
-cars_train, cars_valid = train_test_split(cars, test_size=0.1, random_state=13)
-
-ids = list([(x.split('/')[-1]).split('.')[0].split('_')[:3] for x in train_files])
+all_files = glob.glob(join(TRAIN_FOLDER, '*_*.jpg'))
+ids = list(set([(x.split('/')[-1]).split('_')[0] for x in all_files]))
 ids.sort()
 
-ids_train_split = []
-ids_valid_split = []
+ids_train_split, ids_valid_split = train_test_split(
+    ids, test_size=0.1, random_state=13)
 
-for car, id_patch in itertools.groupby(ids, lambda x: x[0]):
-  if car in cars_train:
-    for idx in id_patch:
-      ids_train_split.append('_'.join(idx))
-  else:
-    for idx in id_patch:
-      ids_valid_split.append('_'.join(idx))
+ids_train_split = [os.path.basename(x).split('.')[0]
+                   for x in all_files if os.path.basename(x).split('_')[0] in ids_train_split]
+ids_valid_split = [os.path.basename(x).split('.')[0]
+                   for x in all_files if os.path.basename(x).split('_')[0] in ids_valid_split]
 
-input_size = 256
-batch_size = 16
+input_size = 128
+batch_size = 32
 epochs = 50
 
 print('Training on {} samples'.format(len(ids_train_split)))
 print('Validating on {} samples'.format(len(ids_valid_split)))
+
 
 def randomShiftScaleRotate(image, mask,
                            shift_limit=(-0.0625, 0.0625),
@@ -63,16 +55,21 @@ def randomShiftScaleRotate(image, mask,
 
         box0 = np.array([[0, 0], [width, 0], [width, height], [0, height], ])
         box1 = box0 - np.array([width / 2, height / 2])
-        box1 = np.dot(box1, rotate_matrix.T) + np.array([width / 2 + dx, height / 2 + dy])
+        box1 = np.dot(box1, rotate_matrix.T) + \
+            np.array([width / 2 + dx, height / 2 + dy])
 
         box0 = box0.astype(np.float32)
         box1 = box1.astype(np.float32)
         mat = cv2.getPerspectiveTransform(box0, box1)
-        image = cv2.warpPerspective(image, mat, (width, height), flags=cv2.INTER_CUBIC, borderMode=borderMode,
+        image = cv2.warpPerspective(
+            image, mat, (
+                width, height), flags=cv2.INTER_CUBIC, borderMode=borderMode,
                                     borderValue=(
                                         0, 0,
                                         0,))
-        mask = cv2.warpPerspective(mask, mat, (width, height), flags=cv2.INTER_CUBIC, borderMode=borderMode,
+        mask = cv2.warpPerspective(
+            mask, mat, (
+                width, height), flags=cv2.INTER_CUBIC, borderMode=borderMode,
                                    borderValue=(
                                        0, 0,
                                        0,))
@@ -87,33 +84,35 @@ def randomHorizontalFlip(image, mask, u=0.5):
 
     return image, mask
 
+
 def train_generator():
     random.seed(13)
     while True:
-      random.shuffle(ids_train_split)
-      for start in range(0, len(ids_train_split), batch_size):
-          x_batch = []
-          y_batch = []
-          end = min(start + batch_size, len(ids_train_split))
-          ids_train_batch = ids_train_split[start:end]
-          for id in ids_train_batch:
-            img = cv2.imread('/data/pavel/carv/train_patches/{}.jpg'.format(id))
-            mask = cv2.imread('/data/pavel/carv/train_patches_masks/{}.png'.format(id), cv2.IMREAD_GRAYSCALE)
-            #mask = misc.imread('/data/pavel/carv/train_patches_masks/{}.gif'.format(id))[...,0]
-
-            img = cv2.resize(img, (input_size, input_size), interpolation=cv2.INTER_CUBIC)
-            mask = cv2.resize(mask, (input_size, input_size), interpolation=cv2.INTER_LINEAR)
-            img, mask = randomShiftScaleRotate(img, mask,
-                                               shift_limit=(-0.0625, 0.0625),
-                                               scale_limit=(-0.1, 0.1),
-                                               rotate_limit=(-0, 0))
-            img, mask = randomHorizontalFlip(img, mask)
-            mask = np.expand_dims(mask, axis=2)
-            x_batch.append(img)
-            y_batch.append(mask)
-          x_batch = np.array(x_batch, np.float32) / 255
-          y_batch = np.array(y_batch, np.float32) / 255
-          yield x_batch, y_batch
+        random.shuffle(ids_train_split)
+        for start in range(0, len(ids_train_split), batch_size):
+            x_batch = []
+            y_batch = []
+            end = min(start + batch_size, len(ids_train_split))
+            ids_train_batch = ids_train_split[start:end]
+            for id in ids_train_batch:
+                img = cv2.imread(join(TRAIN_FOLDER, '{}.jpg'.format(id)))
+                img = cv2.resize(
+                    img, (input_size, input_size), interpolation=cv2.INTER_CUBIC)
+                mask = cv2.imread(
+                    join(TRAIN_FOLDER + '_masks', '{}.png'.format(id)), cv2.IMREAD_GRAYSCALE)
+                mask = cv2.resize(
+                    mask, (input_size, input_size), interpolation=cv2.INTER_LINEAR)
+                # img, mask = randomShiftScaleRotate(img, mask,
+                #                                   shift_limit=(-0.0625, 0.0625),
+                #                                   scale_limit=(-0.1, 0.1),
+                #                                   rotate_limit=(-0, 0))
+                img, mask = randomHorizontalFlip(img, mask)
+                mask = np.expand_dims(mask, axis=2)
+                x_batch.append(img)
+                y_batch.append(mask)
+            x_batch = np.array(x_batch, np.float32) / 255
+            y_batch = np.array(y_batch, np.float32) / 255
+            yield x_batch, y_batch
 
 
 def valid_generator():
@@ -124,11 +123,13 @@ def valid_generator():
             end = min(start + batch_size, len(ids_valid_split))
             ids_valid_batch = ids_valid_split[start:end]
             for id in ids_valid_batch:
-                img = cv2.imread('/data/pavel/carv/train_patches/{}.jpg'.format(id))
-                img = cv2.resize(img, (input_size, input_size), interpolation=cv2.INTER_CUBIC)
-                #mask = cv2.imread('/data/pavel/carv/train_patches_masks/{}.gif'.format(id))[...,0]
-                mask = cv2.imread('/data/pavel/carv/train_patches_masks/{}.png'.format(id), cv2.IMREAD_GRAYSCALE)
-                mask = cv2.resize(mask, (input_size, input_size), interpolation=cv2.INTER_LINEAR)
+                img = cv2.imread(join(TRAIN_FOLDER, '{}.jpg'.format(id)))
+                img = cv2.resize(
+                    img, (input_size, input_size), interpolation=cv2.INTER_CUBIC)
+                mask = cv2.imread(
+                    join(TRAIN_FOLDER + '_masks', '{}.png'.format(id)), cv2.IMREAD_GRAYSCALE)
+                mask = cv2.resize(
+                    mask, (input_size, input_size), interpolation=cv2.INTER_LINEAR)
                 mask = np.expand_dims(mask, axis=2)
                 x_batch.append(img)
                 y_batch.append(mask)
@@ -137,27 +138,28 @@ def valid_generator():
             yield x_batch, y_batch
 
 
-callbacks = [EarlyStopping(monitor='val_dice_loss',
+callbacks = [EarlyStopping(monitor='val_dice_loss100',
                            patience=5,
                            verbose=1,
                            min_delta=1e-4,
                            mode='max'),
-             ReduceLROnPlateau(monitor='val_dice_loss',
+             ReduceLROnPlateau(monitor='val_dice_loss100',
                                factor=0.1,
                                patience=4,
                                verbose=1,
                                epsilon=1e-4,
                                mode='max'),
-             ModelCheckpoint(monitor='val_dice_loss',
-                             filepath='weights/patchesnet_v1',
+             ModelCheckpoint(monitor='val_dice_loss100',
+                             filepath='weights/patchesnet_unet128_noaug_sym_pad',
                              save_best_only=True,
                              save_weights_only=True,
                              mode='max')]
 
-model = get_unet_256(input_shape=(input_size, input_size, 3))
-#model.load_weights(filepath='weights/patchesnet_v1', by_name=True)
+model = get_unet_128(input_shape=(input_size, input_size, 3))
+# model.load_weights(filepath='weights/patchesnet_v1', by_name=True)
 model.fit_generator(generator=train_generator(),
-                    steps_per_epoch=np.ceil(float(len(ids_train_split)) / float(batch_size)),
+                    steps_per_epoch=np.ceil(
+                        float(len(ids_train_split)) / float(batch_size)),
                     epochs=epochs,
                     verbose=1,
                     callbacks=callbacks,
