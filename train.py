@@ -6,12 +6,15 @@ from sklearn.model_selection import train_test_split
 import glob
 from u_net import get_unet_128, get_unet_256, get_unet_512, get_unet_1024
 import os
+import random
+random.seed(13)
 
 ids_train = [os.path.basename(x) for x in glob.glob('/data/pavel/carv/train_patches/*.jpg')]
 ids_train = [x.split('.')[0] for x in ids_train]
+ids_train.sort()
 
-input_size = 256
-batch_size = 16
+input_size = 128
+batch_size = 32
 epochs = 50
 
 ids_train_split, ids_valid_split = train_test_split(ids_train, test_size=0.1, random_state=13)
@@ -67,6 +70,7 @@ def randomHorizontalFlip(image, mask, u=0.5):
 
 def train_generator():
     while True:
+        random.shuffle(ids_train_split)
         for start in range(0, len(ids_train_split), batch_size):
             x_batch = []
             y_batch = []
@@ -78,10 +82,10 @@ def train_generator():
 
                 img = cv2.resize(img, (input_size, input_size), interpolation=cv2.INTER_CUBIC)
                 mask = cv2.resize(mask, (input_size, input_size), interpolation=cv2.INTER_LINEAR)
-                img, mask = randomShiftScaleRotate(img, mask,
-                                                   shift_limit=(-0.0625, 0.0625),
-                                                   scale_limit=(-0.1, 0.1),
-                                                   rotate_limit=(-0, 0))
+                #img, mask = randomShiftScaleRotate(img, mask,
+                #                                   shift_limit=(-0.0625, 0.0625),
+                #                                   scale_limit=(-0.1, 0.1),
+                #                                   rotate_limit=(-0, 0))
                 img, mask = randomHorizontalFlip(img, mask)
                 mask = np.expand_dims(mask, axis=2)
                 x_batch.append(img)
@@ -101,7 +105,7 @@ def valid_generator():
             for id in ids_valid_batch:
                 img = cv2.imread('/data/pavel/carv/train_patches/{}.jpg'.format(id))
                 img = cv2.resize(img, (input_size, input_size), interpolation=cv2.INTER_CUBIC)
-                mask = cv2.imread('/data/pavel/carv/train_patches_mask/{}.png'.format(id), cv2.IMREAD_GRAYSCALE)
+                mask = cv2.imread('/data/pavel/carv/train_patches_masks/{}.png'.format(id), cv2.IMREAD_GRAYSCALE)
                 mask = cv2.resize(mask, (input_size, input_size), interpolation=cv2.INTER_LINEAR)
                 mask = np.expand_dims(mask, axis=2)
                 x_batch.append(img)
@@ -111,24 +115,24 @@ def valid_generator():
             yield x_batch, y_batch
 
 
-callbacks = [EarlyStopping(monitor='val_dice_loss',
+callbacks = [EarlyStopping(monitor='val_dice_loss100',
                            patience=5,
                            verbose=1,
                            min_delta=1e-4,
                            mode='max'),
-             ReduceLROnPlateau(monitor='val_dice_loss',
+             ReduceLROnPlateau(monitor='val_dice_loss100',
                                factor=0.1,
                                patience=4,
                                verbose=1,
                                epsilon=1e-4,
                                mode='max'),
-             ModelCheckpoint(monitor='val_dice_loss',
-                             filepath='weights/patchesnet_v1',
+             ModelCheckpoint(monitor='val_dice_loss100',
+                             filepath='weights/patchesnet_unet128_noaug_sym_pad',
                              save_best_only=True,
                              save_weights_only=True,
                              mode='max')]
 
-model = get_unet_256(input_shape=(input_size, input_size, 3))
+model = get_unet_128(input_shape=(input_size, input_size, 3))
 #model.load_weights(filepath='weights/patchesnet_v1', by_name=True)
 model.fit_generator(generator=train_generator(),
                     steps_per_epoch=np.ceil(float(len(ids_train_split)) / float(batch_size)),

@@ -178,7 +178,7 @@ def get_unet_128(input_shape=(128, 128, 3),
 
     model = Model(inputs=inputs, outputs=classify)
 
-    model.compile(optimizer=SGD(lr=0.01, momentum=0.9), loss=bce_dice_loss, metrics=[dice_loss])
+    model.compile(optimizer=SGD(lr=0.01, momentum=0.9), loss=bce_dice_loss, metrics=[dice_loss, dice_loss100])
 
     return model
 
