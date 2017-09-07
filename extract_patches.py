@@ -29,8 +29,8 @@ ids = [os.path.basename(x) for x in glob.glob(ROOT_DIR + '/train_hq/*.jpg')]
 ids = [x.split('.')[0] for x in ids]
 
 for j in tqdm(range(len(ids))):
-    mask = cv2.imread(ROOT_DIR + '/train_masks/%s_mask.png' %
-                      ids[j], cv2.IMREAD_GRAYSCALE) / 255.0
+    mask = misc.imread(ROOT_DIR + '/train_masks/%s_mask.gif' %
+                      ids[j], cv2.IMREAD_GRAYSCALE)[...,0] / 255.0
     mask = np.pad(mask, ((N // 2, N // 2), (N // 2, N // 2)), 'symmetric')
 
     border = np.abs(np.gradient(mask)[1]) + np.abs(np.gradient(mask)[0])
