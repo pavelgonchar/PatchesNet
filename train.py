@@ -6,9 +6,12 @@ from sklearn.model_selection import train_test_split
 import glob
 from u_net import get_unet_128, get_unet_256, get_unet_512, get_unet_1024
 import os
+import scipy.misc as misc
+from random import shuffle
 
 ids_train = [os.path.basename(x) for x in glob.glob('/data/pavel/carv/train_patches/*.jpg')]
 ids_train = [x.split('.')[0] for x in ids_train]
+ids_train.sort()
 
 input_size = 256
 batch_size = 16
@@ -67,28 +70,30 @@ def randomHorizontalFlip(image, mask, u=0.5):
 
 def train_generator():
     while True:
-        for start in range(0, len(ids_train_split), batch_size):
-            x_batch = []
-            y_batch = []
-            end = min(start + batch_size, len(ids_train_split))
-            ids_train_batch = ids_train_split[start:end]
-            for id in ids_train_batch:
-	        img = cv2.imread('/data/pavel/carv/train_patches/{}.jpg'.format(id))
-                mask = cv2.imread('/data/pavel/carv/train_patches_masks/{}.png'.format(id), cv2.IMREAD_GRAYSCALE)
+      shuffle(ids_train_split)
+      for start in range(0, len(ids_train_split), batch_size):
+          x_batch = []
+          y_batch = []
+          end = min(start + batch_size, len(ids_train_split))
+          ids_train_batch = ids_train_split[start:end]
+          for id in ids_train_batch:
+            img = cv2.imread('/data/pavel/carv/train_patches/{}.jpg'.format(id))
+            mask = cv2.imread('/data/pavel/carv/train_patches_masks/{}.png'.format(id), cv2.IMREAD_GRAYSCALE)
+            #mask = misc.imread('/data/pavel/carv/train_patches_masks/{}.gif'.format(id))[...,0]
 
-                img = cv2.resize(img, (input_size, input_size), interpolation=cv2.INTER_CUBIC)
-                mask = cv2.resize(mask, (input_size, input_size), interpolation=cv2.INTER_LINEAR)
-                img, mask = randomShiftScaleRotate(img, mask,
-                                                   shift_limit=(-0.0625, 0.0625),
-                                                   scale_limit=(-0.1, 0.1),
-                                                   rotate_limit=(-0, 0))
-                img, mask = randomHorizontalFlip(img, mask)
-                mask = np.expand_dims(mask, axis=2)
-                x_batch.append(img)
-                y_batch.append(mask)
-            x_batch = np.array(x_batch, np.float32) / 255
-            y_batch = np.array(y_batch, np.float32) / 255
-            yield x_batch, y_batch
+            img = cv2.resize(img, (input_size, input_size), interpolation=cv2.INTER_CUBIC)
+            mask = cv2.resize(mask, (input_size, input_size), interpolation=cv2.INTER_LINEAR)
+            img, mask = randomShiftScaleRotate(img, mask,
+                                               shift_limit=(-0.0625, 0.0625),
+                                               scale_limit=(-0.1, 0.1),
+                                               rotate_limit=(-0, 0))
+            img, mask = randomHorizontalFlip(img, mask)
+            mask = np.expand_dims(mask, axis=2)
+            x_batch.append(img)
+            y_batch.append(mask)
+          x_batch = np.array(x_batch, np.float32) / 255
+          y_batch = np.array(y_batch, np.float32) / 255
+          yield x_batch, y_batch
 
 
 def valid_generator():
@@ -101,6 +106,7 @@ def valid_generator():
             for id in ids_valid_batch:
                 img = cv2.imread('/data/pavel/carv/train_patches/{}.jpg'.format(id))
                 img = cv2.resize(img, (input_size, input_size), interpolation=cv2.INTER_CUBIC)
+                #mask = cv2.imread('/data/pavel/carv/train_patches_mask/{}.gif'.format(id))[...,0]
                 mask = cv2.imread('/data/pavel/carv/train_patches_mask/{}.png'.format(id), cv2.IMREAD_GRAYSCALE)
                 mask = cv2.resize(mask, (input_size, input_size), interpolation=cv2.INTER_LINEAR)
                 mask = np.expand_dims(mask, axis=2)
