@@ -4,7 +4,8 @@ import pandas as pd
 from keras.callbacks import EarlyStopping, ReduceLROnPlateau, ModelCheckpoint, TensorBoard
 from sklearn.model_selection import train_test_split
 import glob
-from u_net import get_unet_128, get_unet_256, get_unet_512, get_unet_1024
+import u_net
+#from u_net import get_unet_128, get_unet_256, get_unet_512, get_unet_1024
 import os
 import scipy.misc as misc
 import random
@@ -26,9 +27,11 @@ def mkdir_p(path):
 
 mkdir_p('weights')
 
-TRAIN_FOLDER = join(ROOT_DIR, 'train_patches')
+PATCH_SIZE = 256
+TRAIN_FOLDER_PATCHES = join(ROOT_DIR, 'train_patches_' + str(PATCH_SIZE))
+TRAIN_FOLDER_MASKS   = join(ROOT_DIR, 'train_patches_masks_' + str(PATCH_SIZE))
 
-all_files = glob.glob(join(TRAIN_FOLDER, '*_*.jpg'))
+all_files = glob.glob(join(TRAIN_FOLDER_PATCHES, '*_*.jpg'))
 ids = list(set([(x.split('/')[-1]).split('_')[0] for x in all_files]))
 ids.sort()
 
@@ -110,13 +113,15 @@ def train_generator():
             end = min(start + batch_size, len(ids_train_split))
             ids_train_batch = ids_train_split[start:end]
             for id in ids_train_batch:
-                img = cv2.imread(join(TRAIN_FOLDER, '{}.jpg'.format(id)))
-                img = cv2.resize(
-                    img, (input_size, input_size), interpolation=cv2.INTER_CUBIC)
+                img = cv2.imread(join(TRAIN_FOLDER_PATCHES, '{}.jpg'.format(id)))
+                if (input_size, input_size, 3) != img.shape:
+                  img = cv2.resize(
+                      img, (input_size, input_size), interpolation=cv2.INTER_CUBIC)
                 mask = cv2.imread(
-                    join(TRAIN_FOLDER + '_masks', '{}.png'.format(id)), cv2.IMREAD_GRAYSCALE)
-                mask = cv2.resize(
-                    mask, (input_size, input_size), interpolation=cv2.INTER_LINEAR)
+                    join(TRAIN_FOLDER_MASKS, '{}.png'.format(id)), cv2.IMREAD_GRAYSCALE)
+                if (input_size,input_size) != mask.shape:
+                  mask = cv2.resize(
+                      mask, (input_size, input_size), interpolation=cv2.INTER_LINEAR)
                 # img, mask = randomShiftScaleRotate(img, mask,
                 #                                   shift_limit=(-0.0625, 0.0625),
                 #                                   scale_limit=(-0.1, 0.1),
@@ -125,8 +130,10 @@ def train_generator():
                 mask = np.expand_dims(mask, axis=2)
                 x_batch.append(img)
                 y_batch.append(mask)
-            x_batch = np.array(x_batch, np.float32) / 255
-            y_batch = np.array(y_batch, np.float32) / 255
+                if img.shape != (PATCH_SIZE, PATCH_SIZE, 3):
+                  print(id)
+            x_batch = np.array(x_batch, np.float32) / 255.
+            y_batch = np.array(y_batch, np.float32) / 255.
             yield x_batch, y_batch
 
 
@@ -138,18 +145,20 @@ def valid_generator():
             end = min(start + batch_size, len(ids_valid_split))
             ids_valid_batch = ids_valid_split[start:end]
             for id in ids_valid_batch:
-                img = cv2.imread(join(TRAIN_FOLDER, '{}.jpg'.format(id)))
-                img = cv2.resize(
-                    img, (input_size, input_size), interpolation=cv2.INTER_CUBIC)
+                img = cv2.imread(join(TRAIN_FOLDER_PATCHES, '{}.jpg'.format(id)))
+                if input_size != PATCH_SIZE:
+                  img = cv2.resize(
+                      img, (input_size, input_size), interpolation=cv2.INTER_CUBIC)
                 mask = cv2.imread(
-                    join(TRAIN_FOLDER + '_masks', '{}.png'.format(id)), cv2.IMREAD_GRAYSCALE)
-                mask = cv2.resize(
-                    mask, (input_size, input_size), interpolation=cv2.INTER_LINEAR)
+                    join(TRAIN_FOLDER_MASKS, '{}.png'.format(id)), cv2.IMREAD_GRAYSCALE)
+                if input_size != PATCH_SIZE:
+                  mask = cv2.resize(
+                      mask, (input_size, input_size), interpolation=cv2.INTER_LINEAR)
                 mask = np.expand_dims(mask, axis=2)
                 x_batch.append(img)
                 y_batch.append(mask)
-            x_batch = np.array(x_batch, np.float32) / 255
-            y_batch = np.array(y_batch, np.float32) / 255
+            x_batch = np.array(x_batch, np.float32) / 255.
+            y_batch = np.array(y_batch, np.float32) / 255.
             yield x_batch, y_batch
 
 
@@ -170,7 +179,8 @@ callbacks = [EarlyStopping(monitor='val_dice_loss100',
                              save_weights_only=True,
                              mode='max')]
 
-model = get_unet_256(input_shape=(input_size, input_size, 3))
+get_unet = getattr(u_net, 'get_unet_' + str(PATCH_SIZE))
+model = get_unet(input_shape=(input_size, input_size, 3))
 # model.load_weights(filepath='weights/patchesnet_v1', by_name=True)
 model.fit_generator(generator=train_generator(),
                     steps_per_epoch=np.ceil(
