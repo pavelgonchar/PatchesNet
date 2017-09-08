@@ -40,8 +40,8 @@ ids_train_split = [os.path.basename(x).split('.')[0]
 ids_valid_split = [os.path.basename(x).split('.')[0]
                    for x in all_files if os.path.basename(x).split('_')[0] in ids_valid_split]
 
-input_size = 128
-batch_size = 32
+input_size = 256
+batch_size = 32//2
 epochs = 50
 
 print('Training on {} samples'.format(len(ids_train_split)))

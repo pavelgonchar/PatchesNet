@@ -5,6 +5,7 @@ from keras.losses import binary_crossentropy
 import keras.backend as K
 from multi_gpu import to_multi_gpu
 from keras.layers.merge import add
+from keras_contrib.layers.normalization import InstanceNormalization
 
 
 def weighted_bce_loss(y_true, y_pred, weight):
@@ -197,9 +198,10 @@ def get_unet_128(input_shape=(128, 128, 3),
 def get_unet_256(input_shape=(256, 256, 3),
                  num_classes=1):
     inputs = Input(shape=input_shape)
+    inputs_normalized = InstanceNormalization(axis=3)(inputs)
     # 256
 
-    down0 = Conv2D(32, (3, 3), padding='same')(inputs)
+    down0 = Conv2D(32, (3, 3), padding='same')(inputs_normalized)
     down0 = BatchNormalization()(down0)
     down0 = Activation('relu')(down0)
     down0 = Conv2D(32, (3, 3), padding='same')(down0)
@@ -304,8 +306,15 @@ def get_unet_256(input_shape=(256, 256, 3),
     up1 = Activation('relu')(up1)
     # 128
 
+    down0xtra = Conv2D(32, (3, 3), padding='same')(inputs_normalized)
+    down0xtra = BatchNormalization()(down0)
+    down0xtra = Activation('relu')(down0)
+    down0xtra = Conv2D(32, (3, 3), padding='same')(down0)
+    down0xtra = BatchNormalization()(down0)
+    down0xtra = Activation('relu')(down0)
+
     up0 = UpSampling2D((2, 2))(up1)
-    up0 = concatenate([down0, up0], axis=3)
+    up0 = concatenate([down0, up0, down0xtra], axis=3)
     up0 = Conv2D(32, (3, 3), padding='same')(up0)
     up0 = BatchNormalization()(up0)
     up0 = Activation('relu')(up0)
