@@ -9,9 +9,24 @@ import os
 import scipy.misc as misc
 import random
 from os.path import join
+import errno
 import itertools
 
-TRAIN_FOLDER = '/data/pavel/carv/train_patches'
+ROOT_DIR = '/data/pavel/carv'
+
+def mkdir_p(path):
+    """Utility function emulating mkdir -p."""
+    try:
+        os.makedirs(path)
+    except OSError as exc:  # Python >2.5
+        if exc.errno == errno.EEXIST and os.path.isdir(path):
+            pass
+        else:
+            raise
+
+mkdir_p(join(ROOT_DIR, 'weights'))
+
+TRAIN_FOLDER = join(ROOT_DIR, 'train_patches')
 
 all_files = glob.glob(join(TRAIN_FOLDER, '*_*.jpg'))
 ids = list(set([(x.split('/')[-1]).split('_')[0] for x in all_files]))
