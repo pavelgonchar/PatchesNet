@@ -156,8 +156,8 @@ callbacks = [EarlyStopping(monitor='val_dice_loss100',
                              save_weights_only=True,
                              mode='max')]
 
-model = get_unet_128(input_shape=(input_size, input_size, 3))
-model.load_weights(filepath='weights/patchesnet_unet128_noaug_sym_pad_multi_gpu_skipcon', by_name=True)
+model = get_unet_128(input_shape=(input_size, input_size, 3), use_multi_gpu=True)
+#model.load_weights(filepath='weights/patchesnet_unet128_noaug_sym_pad_multi_gpu_skipcon', by_name=True)
 model.fit_generator(generator=train_generator(),
                     steps_per_epoch=np.ceil(
                         float(len(ids_train_split)) / float(batch_size)),
