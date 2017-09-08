@@ -83,7 +83,7 @@ def bce_dice_loss(y_true, y_pred):
 
 
 def get_unet_128(input_shape=(128, 128, 3),
-                 num_classes=1):
+                 num_classes=1, use_multi_gpu=False):
     inputs = Input(shape=input_shape)
     inputs_normalized = BatchNormalization(name='input_norm')(inputs)
     # 128
@@ -190,7 +190,8 @@ def get_unet_128(input_shape=(128, 128, 3),
 
     model = Model(inputs=inputs, outputs=classify)
 
-    model = multi_gpu.make_parallel(model, 4)
+    if use_multi_gpu:
+        model = multi_gpu.make_parallel(model, 4, splits=[32, 32, 32, 32])
 
     model.compile(optimizer=SGD(lr=0.01, momentum=0.9),
                   loss=bce_dice_loss, metrics=[dice_loss, dice_loss100])
@@ -328,7 +329,8 @@ def get_unet_256(input_shape=(256, 256, 3),
 
     model = Model(inputs=inputs, outputs=classify)
 
-    model = multi_gpu.make_parallel(model, 4)
+    if use_multi_gpu:
+        model = multi_gpu.make_parallel(model, 4, splits=[32, 32, 32, 32])
 
     model.compile(optimizer=SGD(lr=0.01, momentum=0.9),
                   loss=bce_dice_loss, metrics=[dice_loss, dice_loss100])
