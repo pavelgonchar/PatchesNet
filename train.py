@@ -24,7 +24,7 @@ def mkdir_p(path):
         else:
             raise
 
-mkdir_p(join(ROOT_DIR, 'weights'))
+mkdir_p('weights')
 
 TRAIN_FOLDER = join(ROOT_DIR, 'train_patches')
 
