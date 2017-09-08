@@ -6,7 +6,6 @@ import keras.backend as K
 from multi_gpu import to_multi_gpu
 from keras.layers.merge import add
 
-
 def weighted_bce_loss(y_true, y_pred, weight):
     # avoiding overflow
     epsilon = 1e-7
@@ -86,9 +85,10 @@ def bce_dice_loss(y_true, y_pred):
 def get_unet_128(input_shape=(128, 128, 3),
                  num_classes=1):
     inputs = Input(shape=input_shape)
+    inputs_normalized = BatchNormalization(name='input_norm')(inputs)
     # 128
 
-    down1 = Conv2D(64, (3, 3), padding='same')(inputs)
+    down1 = Conv2D(64, (3, 3), padding='same')(inputs_normalized)
     down1 = BatchNormalization()(down1)
     down1 = Activation('relu')(down1)
     down1 = Conv2D(64, (3, 3), padding='same')(down1)
@@ -184,9 +184,13 @@ def get_unet_128(input_shape=(128, 128, 3),
     up1 = Activation('relu')(up1)
     # 128
 
+    up1 = concatenate([up1, inputs_normalized])
+
     classify = Conv2D(num_classes, (1, 1), activation='sigmoid')(up1)
 
     model = Model(inputs=inputs, outputs=classify)
+
+    model = to_multi_gpu(model,n_gpus=4)
 
     model.compile(optimizer=SGD(lr=0.01, momentum=0.9),
                   loss=bce_dice_loss, metrics=[dice_loss, dice_loss100])
@@ -317,11 +321,13 @@ def get_unet_256(input_shape=(256, 256, 3),
     up0 = Activation('relu')(up0)
     # 256
 
+    up0b = concatenate([up0b, inputs])
+
     classify = Conv2D(num_classes, (1, 1), activation='sigmoid')(up0)
 
     model = Model(inputs=inputs, outputs=classify)
 
-    # model = to_multi_gpu(model,n_gpus=8)
+    model = to_multi_gpu(model,n_gpus=4)
 
     model.compile(optimizer=SGD(lr=0.01, momentum=0.9),
                   loss=bce_dice_loss, metrics=[dice_loss, dice_loss100])

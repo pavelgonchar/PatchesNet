@@ -27,6 +27,7 @@ mkdir_p(ROOT_DIR + '/train_patches_masks')
 
 ids = [os.path.basename(x) for x in glob.glob(ROOT_DIR + '/train_hq/*.jpg')]
 ids = [x.split('.')[0] for x in ids]
+ids.sort()
 
 for j in tqdm(range(len(ids))):
     mask = misc.imread(ROOT_DIR + '/train_masks/%s_mask.gif' %
@@ -44,7 +45,7 @@ for j in tqdm(range(len(ids))):
 
     i = 0
     for x, y in zip(np.nonzero(border)[0], np.nonzero(border)[1]):
-        if i % 50 == 0 and x - N // 2 >= 0 and y - N // 2 >= 0:
+        if i % 50 == 0 and x - N // 2 >= 0 and y - N // 2 >= 0 and y - N // 2 < img.shape[0] and y + N // 2 < img.shape[1]:
             misc.imsave(ROOT_DIR + '/train_patches/%s_%s.jpg' %
                         (ids[j], i), img[x - N // 2:x + N // 2, y - N // 2:y + N // 2, :])
             misc.imsave(ROOT_DIR + '/train_patches_masks/%s_%s.png' %

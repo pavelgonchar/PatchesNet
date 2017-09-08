@@ -27,7 +27,7 @@ ids_valid_split = [os.path.basename(x).split('.')[0]
 
 
 input_size = 128
-batch_size = 32
+batch_size = 32*4
 epochs = 50
 
 print('Training on {} samples'.format(len(ids_train_split)))
@@ -151,7 +151,7 @@ callbacks = [EarlyStopping(monitor='val_dice_loss100',
                                epsilon=1e-4,
                                mode='max'),
              ModelCheckpoint(monitor='val_dice_loss100',
-                             filepath='weights/patchesnet_unet128_noaug_sym_pad',
+                             filepath='weights/patchesnet_unet128_noaug_sym_pad_multi_gpu_skipcon',
                              save_best_only=True,
                              save_weights_only=True,
                              mode='max')]
