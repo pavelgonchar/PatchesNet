@@ -307,12 +307,15 @@ def get_unet_256(input_shape=(256, 256, 3),
     # 128
 
     down0xtra = Conv2D(32, (3, 3), padding='same')(inputs_normalized)
-    down0xtra = BatchNormalization()(down0)
-    down0xtra = Activation('relu')(down0)
-    down0xtra = Conv2D(32, (3, 3), padding='same')(down0)
-    down0xtra = BatchNormalization()(down0)
-    down0xtra = Activation('relu')(down0)
-
+    down0xtra = BatchNormalization()(down0xtra)
+    down0xtra = Activation('relu')(down0xtra)
+    down0xtra = Conv2D(32, (3, 3), padding='same')(down0xtra)
+    down0xtra = BatchNormalization()(down0xtra)
+    down0xtra = Activation('relu')(down0xtra)
+    down0xtra = Conv2D(32, (3, 3), padding='same')(down0xtra)
+    down0xtra = BatchNormalization()(down0xtra)
+    down0xtra = Activation('relu')(down0xtra)
+    
     up0 = UpSampling2D((2, 2))(up1)
     up0 = concatenate([down0, up0, down0xtra], axis=3)
     up0 = Conv2D(32, (3, 3), padding='same')(up0)

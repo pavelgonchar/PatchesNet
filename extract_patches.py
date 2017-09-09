@@ -52,7 +52,7 @@ for j in tqdm(range(len(ids))):
 
     i = 0
     for x, y in zip(np.nonzero(border)[0], np.nonzero(border)[1]):
-        if i % 50 == 0 and x - N // 2 >= 0 and y - N // 2 >= 0 and x + N // 2 < img.shape[1] and y + N // 2 < img.shape[0]:
+        if i % 50 == 0 and x - N // 2 >= 0 and y - N // 2 >= 0 and x + N // 2 < img.shape[0] and y + N // 2 < img.shape[1]:
             misc.imsave(join(TRAIN_FOLDER_PATCHES, '%s_%s.jpg' % (ids[j], i)), 
                 img[x - N // 2:x + N // 2, y - N // 2:y + N // 2, :])
             misc.imsave(join(TRAIN_FOLDER_MASKS, '%s_%s.png' % (ids[j], i)), 
