@@ -115,11 +115,13 @@ def train_generator():
             for id in ids_train_batch:
                 img = cv2.imread(join(TRAIN_FOLDER_PATCHES, '{}.jpg'.format(id)))
                 if (input_size, input_size, 3) != img.shape:
+                  print(id)
                   img = cv2.resize(
                       img, (input_size, input_size), interpolation=cv2.INTER_CUBIC)
                 mask = cv2.imread(
                     join(TRAIN_FOLDER_MASKS, '{}.png'.format(id)), cv2.IMREAD_GRAYSCALE)
                 if (input_size,input_size) != mask.shape:
+                  print(id)
                   mask = cv2.resize(
                       mask, (input_size, input_size), interpolation=cv2.INTER_LINEAR)
                 # img, mask = randomShiftScaleRotate(img, mask,
@@ -146,12 +148,14 @@ def valid_generator():
             ids_valid_batch = ids_valid_split[start:end]
             for id in ids_valid_batch:
                 img = cv2.imread(join(TRAIN_FOLDER_PATCHES, '{}.jpg'.format(id)))
-                if input_size != PATCH_SIZE:
+                if (input_size, input_size, 3) != img.shape:
+                  print(id)
                   img = cv2.resize(
                       img, (input_size, input_size), interpolation=cv2.INTER_CUBIC)
                 mask = cv2.imread(
                     join(TRAIN_FOLDER_MASKS, '{}.png'.format(id)), cv2.IMREAD_GRAYSCALE)
-                if input_size != PATCH_SIZE:
+                if (input_size,input_size) != mask.shape:
+                  print(id)
                   mask = cv2.resize(
                       mask, (input_size, input_size), interpolation=cv2.INTER_LINEAR)
                 mask = np.expand_dims(mask, axis=2)
@@ -181,7 +185,8 @@ callbacks = [EarlyStopping(monitor='val_dice_loss100',
 
 get_unet = getattr(u_net, 'get_unet_' + str(PATCH_SIZE))
 model = get_unet(input_shape=(input_size, input_size, 3))
-# model.load_weights(filepath='weights/patchesnet_v1', by_name=True)
+#model.load_weights(filepath='weights/patchesnet_unet256_noaug_sym_pad', by_name=True)
+model.summary()
 model.fit_generator(generator=train_generator(),
                     steps_per_epoch=np.ceil(
                         float(len(ids_train_split)) / float(batch_size)),
