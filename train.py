@@ -15,6 +15,7 @@ from os.path import join
 import errno
 import itertools
 import argparse
+from multi_gpu import to_multi_gpu
 
 ROOT_DIR = '/data/pavel/carv'
 WEIGHTS_DIR = '../PatchesNet-binaries/weights'
@@ -41,6 +42,8 @@ parser.add_argument('-c', '--cpu', action='store_true', help='force CPU usage')
 parser.add_argument('-p', '--patch-size', type=int, default=256, help='Patch size, e.g -p 128')
 parser.add_argument('-i', '--input-size', type=int, default=256, help='Network input size, e.g -i 256')
 parser.add_argument('-ub', '--use-background', action='store_true', help='Use background as input to NN')
+parser.add_argument('-o', '--optimizer', type=str, default='sgd', help='Optimizer to use: adam, nadam, sgd, e.g. -o adam')
+parser.add_argument('-g', '--gpus', type=int, default=1, help='Use GPUs, e.g -g 2')
 args = parser.parse_args()
 
 if args.cpu:
@@ -210,7 +213,19 @@ get_unet = getattr(u_net, 'get_'+ model_name)
 model = get_unet(input_shape=(input_size, input_size, 3))
 model.load_weights(filepath='weights/patchesnet_unet256_noaug_sym_pad', by_name=True)
 model.summary()
-model.compile(optimizer=SGD(lr=args.learning_rate, momentum=0.9), loss=bce_dice_loss, metrics=[dice_loss, dice_loss100])
+if args.gpus != 1:
+  model = to_multi_gpu(model,n_gpus=args.gpus)
+if args.optimizer == 'adam':
+  optimizer=Adam(lr=args.learning_rate)
+elif args.optimizer == 'nadam':
+  optimizer=Nadam(lr=args.learning_rate)
+elif args.optimizer == 'rmsprop':
+  optimizer=RMSprop(lr=args.learning_rate)
+elif args.optimizer == 'sgd':
+  optimizer=SGD(lr=args.learning_rate, momentum=0.9)
+else:
+  assert False
+model.compile(optimizer=optimizer, loss=bce_dice_loss, metrics=[dice_loss, dice_loss100])
 model.fit_generator(generator=train_generator(),
                     steps_per_epoch=np.ceil(
                         float(len(ids_train_split)) / float(batch_size)),
