@@ -2,18 +2,22 @@ import cv2
 import numpy as np
 import pandas as pd
 from keras.callbacks import EarlyStopping, ReduceLROnPlateau, ModelCheckpoint, TensorBoard
+from keras.optimizers import SGD, Adam, RMSprop, Nadam
+
 from sklearn.model_selection import train_test_split
 import glob
 import u_net
-#from u_net import get_unet_128, get_unet_256, get_unet_512, get_unet_1024
+from u_net import bce_dice_loss, dice_loss, dice_loss100
 import os
 import scipy.misc as misc
 import random
 from os.path import join
 import errno
 import itertools
+import argparse
 
 ROOT_DIR = '/data/pavel/carv'
+WEIGHTS_DIR = '../PatchesNet-binaries/weights'
 
 def mkdir_p(path):
     """Utility function emulating mkdir -p."""
@@ -25,15 +29,38 @@ def mkdir_p(path):
         else:
             raise
 
-mkdir_p('weights')
+mkdir_p(WEIGHTS_DIR)
 
-PATCH_SIZE = 256
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--max-epoch', type=int, default=50, help='Epoch to run')
+parser.add_argument('-b', '--batch-size', type=int, default=16, help='Batch Size during training, e.g. -b 32')
+parser.add_argument('-l', '--learning-rate', type=float, default=1e-2, help='Initial learning rate, e.g. -l 1e-2')
+#parser.add_argument('-m', '--model', help='load hdf5 model (and continue training)')
+parser.add_argument('-c', '--cpu', action='store_true', help='force CPU usage')
+parser.add_argument('-p', '--patch-size', type=int, default=256, help='Patch size, e.g -p 128')
+parser.add_argument('-i', '--input-size', type=int, default=256, help='Network input size, e.g -i 256')
+parser.add_argument('-ub', '--use-background', action='store_true', help='Use background as input to NN')
+args = parser.parse_args()
+
+if args.cpu:
+    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
+PATCH_SIZE = args.patch_size
 TRAIN_FOLDER_PATCHES = join(ROOT_DIR, 'train_patches_' + str(PATCH_SIZE))
 TRAIN_FOLDER_MASKS   = join(ROOT_DIR, 'train_patches_masks_' + str(PATCH_SIZE))
+BACKGROUNDS_FOLDER   = join(ROOT_DIR, 'train_background_hq')
+CSV_FILENAME         = join(ROOT_DIR, 'train_patches_' + str(PATCH_SIZE) + ".csv")
 
 all_files = glob.glob(join(TRAIN_FOLDER_PATCHES, '*_*.jpg'))
 ids = list(set([(x.split('/')[-1]).split('_')[0] for x in all_files]))
 ids.sort()
+
+if args.use_background:
+   with open(CSV_FILENAME, 'rb') as csvfile:
+        reader = csv.reader(csvfile, delimiter=',', quotechar='|', quoting=csv.QUOTE_MINIMAL)
+        patches_dict = {rows[0]:rows[1] for rows in reader}
 
 ids_train_split, ids_valid_split = train_test_split(
     ids, test_size=0.1, random_state=13)
@@ -43,13 +70,11 @@ ids_train_split = [os.path.basename(x).split('.')[0]
 ids_valid_split = [os.path.basename(x).split('.')[0]
                    for x in all_files if os.path.basename(x).split('_')[0] in ids_valid_split]
 
-input_size = 256
-batch_size = 32//2
-epochs = 50
+input_size = args.input_size
+batch_size = args.batch_size 
 
 print('Training on {} samples'.format(len(ids_train_split)))
 print('Validating on {} samples'.format(len(ids_valid_split)))
-
 
 def randomShiftScaleRotate(image, mask,
                            shift_limit=(-0.0625, 0.0625),
@@ -91,9 +116,7 @@ def randomShiftScaleRotate(image, mask,
                                    borderValue=(
                                        0, 0,
                                        0,))
-
     return image, mask
-
 
 def randomHorizontalFlip(image, mask, u=0.5):
     if np.random.random() < u:
@@ -101,7 +124,6 @@ def randomHorizontalFlip(image, mask, u=0.5):
         mask = cv2.flip(mask, 1)
 
     return image, mask
-
 
 def train_generator():
     random.seed(13)
@@ -178,19 +200,21 @@ callbacks = [EarlyStopping(monitor='val_dice_loss100',
                                epsilon=1e-4,
                                mode='max'),
              ModelCheckpoint(monitor='val_dice_loss100',
-                             filepath='weights/patchesnet_unet256_noaug_sym_pad',
+                             filepath=join(WEIGHTS_DIR,'patchesnet_unet256_noaug_sym_pad'),
                              save_best_only=True,
                              save_weights_only=True,
                              mode='max')]
 
-get_unet = getattr(u_net, 'get_unet_' + str(PATCH_SIZE))
+model_name = 'unet_' + ('background_' if args.use_background else '') + str(PATCH_SIZE)
+get_unet = getattr(u_net, 'get_'+ model_name)
 model = get_unet(input_shape=(input_size, input_size, 3))
-#model.load_weights(filepath='weights/patchesnet_unet256_noaug_sym_pad', by_name=True)
+model.load_weights(filepath='weights/patchesnet_unet256_noaug_sym_pad', by_name=True)
 model.summary()
+model.compile(optimizer=SGD(lr=args.learning_rate, momentum=0.9), loss=bce_dice_loss, metrics=[dice_loss, dice_loss100])
 model.fit_generator(generator=train_generator(),
                     steps_per_epoch=np.ceil(
                         float(len(ids_train_split)) / float(batch_size)),
-                    epochs=epochs,
+                    epochs=args.max_epoch,
                     verbose=1,
                     callbacks=callbacks,
                     validation_data=valid_generator(),
