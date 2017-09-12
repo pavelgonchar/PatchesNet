@@ -16,6 +16,7 @@ import errno
 import itertools
 import argparse
 from multi_gpu import to_multi_gpu
+import csv
 
 ROOT_DIR = '/data/pavel/carv'
 WEIGHTS_DIR = '../PatchesNet-binaries/weights'
@@ -63,7 +64,7 @@ ids.sort()
 if args.use_background:
    with open(CSV_FILENAME, 'rb') as csvfile:
         reader = csv.reader(csvfile, delimiter=',', quotechar='|', quoting=csv.QUOTE_MINIMAL)
-        patches_dict = {rows[0]:rows[1] for rows in reader}
+        patches_dict = {rows[0]:(int(rows[1]),int(rows[2])) for rows in reader}
 
 ids_train_split, ids_valid_split = train_test_split(
     ids, test_size=0.1, random_state=13)
@@ -121,75 +122,75 @@ def randomShiftScaleRotate(image, mask,
                                        0,))
     return image, mask
 
-def randomHorizontalFlip(image, mask, u=0.5):
+def randomHorizontalFlip(image, mask, background=None, u=0.5):
     if np.random.random() < u:
         image = cv2.flip(image, 1)
         mask = cv2.flip(mask, 1)
+        if background is not None:
+          background = cv2.flip(background, 1)
+
+    if background is not None:
+      return image, mask, background
 
     return image, mask
 
-def train_generator():
+def generator(ids, training = True):
     random.seed(13)
     while True:
-        random.shuffle(ids_train_split)
-        for start in range(0, len(ids_train_split), batch_size):
-            x_batch = []
-            y_batch = []
-            end = min(start + batch_size, len(ids_train_split))
-            ids_train_batch = ids_train_split[start:end]
-            for id in ids_train_batch:
-                img = cv2.imread(join(TRAIN_FOLDER_PATCHES, '{}.jpg'.format(id)))
-                if (input_size, input_size, 3) != img.shape:
-                  print(id)
-                  img = cv2.resize(
-                      img, (input_size, input_size), interpolation=cv2.INTER_CUBIC)
-                mask = cv2.imread(
-                    join(TRAIN_FOLDER_MASKS, '{}.png'.format(id)), cv2.IMREAD_GRAYSCALE)
-                if (input_size,input_size) != mask.shape:
-                  print(id)
-                  mask = cv2.resize(
-                      mask, (input_size, input_size), interpolation=cv2.INTER_LINEAR)
-                # img, mask = randomShiftScaleRotate(img, mask,
-                #                                   shift_limit=(-0.0625, 0.0625),
-                #                                   scale_limit=(-0.1, 0.1),
-                #                                   rotate_limit=(-0, 0))
-                img, mask = randomHorizontalFlip(img, mask)
-                mask = np.expand_dims(mask, axis=2)
+      if training:
+        random.shuffle(ids)
+      for start in range(0, len(ids), batch_size):
+          x_batch = []
+          y_batch = []
+          end = min(start + batch_size, len(ids))
+          ids_batch = ids[start:end]
+          for id in ids_batch:
+              img = cv2.imread(join(TRAIN_FOLDER_PATCHES, '{}.jpg'.format(id)))
+              if (input_size, input_size, 3) != img.shape:
+                img = cv2.resize(
+                    img, (input_size, input_size), interpolation=cv2.INTER_CUBIC)
+              mask = cv2.imread(
+                  join(TRAIN_FOLDER_MASKS, '{}.png'.format(id)), cv2.IMREAD_GRAYSCALE)
+              if (input_size,input_size) != mask.shape:
+                mask = cv2.resize(
+                    mask, (input_size, input_size), interpolation=cv2.INTER_LINEAR)
+
+              if args.use_background:
+                car_id = id.split('_')[0]
+                x,y = patches_dict['{}.jpg'.format(id)]
+                all_background = cv2.imread(join(BACKGROUNDS_FOLDER, '{}.png'.format(car_id)))
+                all_background = np.pad(all_background, ((PATCH_SIZE // 2, PATCH_SIZE // 2), (PATCH_SIZE // 2, PATCH_SIZE // 2), (0, 0)), 'symmetric')
+                background = all_background[y-PATCH_SIZE//2:y+PATCH_SIZE//2,x-PATCH_SIZE//2:x+PATCH_SIZE//2]
+                no_background_color = (255,0,255)
+                background_index = np.all(background != no_background_color, axis=-1)
+                selected_background = background[background_index]
+                if selected_background.size > 0:
+                  selected_background_mean = np.mean(selected_background)
+                  selected_background_std  = np.std(selected_background)
+
+                  background[~background_index] = \
+                    np.random.normal(loc=selected_background_mean, scale=selected_background_std, size=3*PATCH_SIZE**2-selected_background.size).reshape(-1,3)
+              # img, mask = randomShiftScaleRotate(img, mask,
+              #                                   shift_limit=(-0.0625, 0.0625),
+              #                                   scale_limit=(-0.1, 0.1),
+              #                                   rotate_limit=(-0, 0))
+              if training:
+                if args.use_background:
+                  img, mask, background = randomHorizontalFlip(img, mask, background)
+                else:
+                  img, mask = randomHorizontalFlip(img, mask)
+
+              mask = np.expand_dims(mask, axis=2)
+              if args.use_background:
+                x_batch.append(np.concatenate((img, background), axis=2))
+              else:
                 x_batch.append(img)
-                y_batch.append(mask)
-                if img.shape != (PATCH_SIZE, PATCH_SIZE, 3):
-                  print(id)
-            x_batch = np.array(x_batch, np.float32) / 255.
-            y_batch = np.array(y_batch, np.float32) / 255.
-            yield x_batch, y_batch
-
-
-def valid_generator():
-    while True:
-        for start in range(0, len(ids_valid_split), batch_size):
-            x_batch = []
-            y_batch = []
-            end = min(start + batch_size, len(ids_valid_split))
-            ids_valid_batch = ids_valid_split[start:end]
-            for id in ids_valid_batch:
-                img = cv2.imread(join(TRAIN_FOLDER_PATCHES, '{}.jpg'.format(id)))
-                if (input_size, input_size, 3) != img.shape:
-                  print(id)
-                  img = cv2.resize(
-                      img, (input_size, input_size), interpolation=cv2.INTER_CUBIC)
-                mask = cv2.imread(
-                    join(TRAIN_FOLDER_MASKS, '{}.png'.format(id)), cv2.IMREAD_GRAYSCALE)
-                if (input_size,input_size) != mask.shape:
-                  print(id)
-                  mask = cv2.resize(
-                      mask, (input_size, input_size), interpolation=cv2.INTER_LINEAR)
-                mask = np.expand_dims(mask, axis=2)
-                x_batch.append(img)
-                y_batch.append(mask)
-            x_batch = np.array(x_batch, np.float32) / 255.
-            y_batch = np.array(y_batch, np.float32) / 255.
-            yield x_batch, y_batch
-
+              y_batch.append(mask)
+              if img.shape != (PATCH_SIZE, PATCH_SIZE, 3):
+                print(id)
+          x_batch = np.array(x_batch, np.float32) / 255.
+          y_batch = np.array(y_batch, np.float32) / 255.
+          yield x_batch, y_batch
 
 callbacks = [EarlyStopping(monitor='val_dice_loss100',
                            patience=5,
@@ -210,8 +211,8 @@ callbacks = [EarlyStopping(monitor='val_dice_loss100',
 
 model_name = 'unet_' + ('background_' if args.use_background else '') + str(PATCH_SIZE)
 get_unet = getattr(u_net, 'get_'+ model_name)
-model = get_unet(input_shape=(input_size, input_size, 3))
-model.load_weights(filepath='weights/patchesnet_unet256_noaug_sym_pad', by_name=True)
+model = get_unet(input_shape=(input_size, input_size, 6 if args.use_background else 3))
+#model.load_weights(filepath='weights/patchesnet_unet256_noaug_sym_pad', by_name=True)
 model.summary()
 if args.gpus != 1:
   model = to_multi_gpu(model,n_gpus=args.gpus)
@@ -226,11 +227,11 @@ elif args.optimizer == 'sgd':
 else:
   assert False
 model.compile(optimizer=optimizer, loss=bce_dice_loss, metrics=[dice_loss, dice_loss100])
-model.fit_generator(generator=train_generator(),
+model.fit_generator(generator=generator(ids = ids_train_split, training=True),
                     steps_per_epoch=np.ceil(
                         float(len(ids_train_split)) / float(batch_size)),
                     epochs=args.max_epoch,
                     verbose=1,
                     callbacks=callbacks,
-                    validation_data=valid_generator(),
+                    validation_data=generator(ids = ids_valid_split, training=False),
                     validation_steps=np.ceil(float(len(ids_valid_split)) / float(batch_size)))
