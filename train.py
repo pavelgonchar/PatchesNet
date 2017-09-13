@@ -65,6 +65,8 @@ if args.use_background:
    with open(CSV_FILENAME, 'rb') as csvfile:
         reader = csv.reader(csvfile, delimiter=',', quotechar='|', quoting=csv.QUOTE_MINIMAL)
         patches_dict = {rows[0]:(int(rows[1]),int(rows[2])) for rows in reader}
+        background_dict = { }
+        stats_dict      = { }
 
 ids_train_split, ids_valid_split = train_test_split(
     ids, test_size=0.1, random_state=13)
@@ -157,16 +159,25 @@ def generator(ids, training = True):
 
               if args.use_background:
                 car_id = id.split('_')[0]
-                x,y = patches_dict['{}.jpg'.format(id)]
-                all_background = cv2.imread(join(BACKGROUNDS_FOLDER, '{}.png'.format(car_id)))
-                all_background = np.pad(all_background, ((PATCH_SIZE // 2, PATCH_SIZE // 2), (PATCH_SIZE // 2, PATCH_SIZE // 2), (0, 0)), 'symmetric')
+                if car_id in background_dict:
+                  all_background = background_dict[car_id]
+                else:
+                  all_background = cv2.imread(join(BACKGROUNDS_FOLDER, '{}.png'.format(car_id)))
+                  all_background = np.pad(all_background, ((PATCH_SIZE // 2, PATCH_SIZE // 2), (PATCH_SIZE // 2, PATCH_SIZE // 2), (0, 0)), 'symmetric')
+                  background_dict[car_id] = all_background
+                patch_id = '{}.jpg'.format(id)
+                x,y = patches_dict[patch_id]
                 background = all_background[y-PATCH_SIZE//2:y+PATCH_SIZE//2,x-PATCH_SIZE//2:x+PATCH_SIZE//2]
                 no_background_color = (255,0,255)
                 background_index = np.all(background != no_background_color, axis=-1)
                 selected_background = background[background_index]
                 if selected_background.size > 0:
-                  selected_background_mean = np.mean(selected_background)
-                  selected_background_std  = np.std(selected_background)
+                  if patch_id in stats_dict:
+                    selected_background_mean,selected_background_std  = stats_dict[patch_id]
+                  else:
+                    selected_background_mean = np.mean(selected_background)
+                    selected_background_std  = np.std(selected_background)
+                    stats_dict[patch_id] = (selected_background_mean, selected_background_std)
 
                   background[~background_index] = \
                     np.random.normal(loc=selected_background_mean, scale=selected_background_std, size=3*PATCH_SIZE**2-selected_background.size).reshape(-1,3)
@@ -192,6 +203,15 @@ def generator(ids, training = True):
           y_batch = np.array(y_batch, np.float32) / 255.
           yield x_batch, y_batch
 
+model_name = 'unet_' + ('background_' if args.use_background else '') + str(PATCH_SIZE)
+get_unet = getattr(u_net, 'get_'+ model_name)
+model = get_unet(input_shape=(input_size, input_size, 6 if args.use_background else 3))
+model.summary()
+model.get_layer('instance_normalization_1').name='instance_normalization_1_bg'
+model.get_layer('conv2d_1').name='conv2d_1_bg'
+model.get_layer('conv2d_25').name='conv2d_25_bg'
+model.load_weights(filepath=join(WEIGHTS_DIR, 'patchesnet_unet256_noaug_sym_pad'), by_name=True)
+
 callbacks = [EarlyStopping(monitor='val_dice_loss100',
                            patience=5,
                            verbose=1,
@@ -204,16 +224,11 @@ callbacks = [EarlyStopping(monitor='val_dice_loss100',
                                epsilon=1e-4,
                                mode='max'),
              ModelCheckpoint(monitor='val_dice_loss100',
-                             filepath=join(WEIGHTS_DIR,'patchesnet_unet256_noaug_sym_pad'),
+                             filepath=join(WEIGHTS_DIR,"patchesnet-"+ model_name + "-epoch{epoch:02d}-val_dice{val_dice_loss:.6f}"),
                              save_best_only=True,
                              save_weights_only=True,
                              mode='max')]
 
-model_name = 'unet_' + ('background_' if args.use_background else '') + str(PATCH_SIZE)
-get_unet = getattr(u_net, 'get_'+ model_name)
-model = get_unet(input_shape=(input_size, input_size, 6 if args.use_background else 3))
-#model.load_weights(filepath='weights/patchesnet_unet256_noaug_sym_pad', by_name=True)
-model.summary()
 if args.gpus != 1:
   model = to_multi_gpu(model,n_gpus=args.gpus)
 if args.optimizer == 'adam':
