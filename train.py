@@ -17,6 +17,9 @@ import itertools
 import argparse
 from multi_gpu import to_multi_gpu
 import csv
+from tps import tps
+
+from keras.applications.imagenet_utils import preprocess_input as preprocess_input_imagenet
 
 ROOT_DIR = '/data/pavel/carv'
 WEIGHTS_DIR = '../PatchesNet-binaries/weights'
@@ -33,19 +36,26 @@ def mkdir_p(path):
 
 mkdir_p(WEIGHTS_DIR)
 
-
 parser = argparse.ArgumentParser()
 parser.add_argument('--max-epoch', type=int, default=50, help='Epoch to run')
 parser.add_argument('-b', '--batch-size', type=int, default=16, help='Batch Size during training, e.g. -b 32')
 parser.add_argument('-l', '--learning-rate', type=float, default=1e-2, help='Initial learning rate, e.g. -l 1e-2')
-#parser.add_argument('-m', '--model', help='load hdf5 model (and continue training)')
+parser.add_argument('-lw', '--load-weights', type=str, help='load model weights (and continue training)')
+parser.add_argument('-lm', '--load-model', type=str, help='load model (and continue training)')
 parser.add_argument('-c', '--cpu', action='store_true', help='force CPU usage')
 parser.add_argument('-p', '--patch-size', type=int, default=256, help='Patch size, e.g -p 128')
 parser.add_argument('-i', '--input-size', type=int, default=256, help='Network input size, e.g -i 256')
 parser.add_argument('-ub', '--use-background', action='store_true', help='Use background as input to NN')
 parser.add_argument('-o', '--optimizer', type=str, default='sgd', help='Optimizer to use: adam, nadam, sgd, e.g. -o adam')
 parser.add_argument('-g', '--gpus', type=int, default=1, help='Use GPUs, e.g -g 2')
-args = parser.parse_args()
+parser.add_argument('-at', '--augmentation-tps', action='store_true', help='TPS augmentation')
+parser.add_argument('-af', '--augmentation-flips', action='store_true', help='Flips augmentation')
+parser.add_argument('-s', '--suffix', type=str, default=None, help='Suffix for saving model name')
+parser.add_argument('-m', '--model', type=str, default='dilated_unet', help='Use model, e.g. -m dilated_unet -m unet_256, unet_bg_256, largekernels')
+
+args = parser.parse_args()  
+
+preprocess_for_model = preprocess_input_imagenet if args.model == 'largekernels' else lambda x: x
 
 if args.cpu:
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
@@ -146,6 +156,7 @@ def generator(ids, training = True):
           y_batch = []
           end = min(start + batch_size, len(ids))
           ids_batch = ids[start:end]
+          i = 0
           for id in ids_batch:
               img = cv2.imread(join(TRAIN_FOLDER_PATCHES, '{}.jpg'.format(id)))
               if (input_size, input_size, 3) != img.shape:
@@ -167,7 +178,7 @@ def generator(ids, training = True):
                   background_dict[car_id] = all_background
                 patch_id = '{}.jpg'.format(id)
                 x,y = patches_dict[patch_id]
-                background = all_background[y-PATCH_SIZE//2:y+PATCH_SIZE//2,x-PATCH_SIZE//2:x+PATCH_SIZE//2]
+                background = np.copy(all_background[y-PATCH_SIZE//2:y+PATCH_SIZE//2,x-PATCH_SIZE//2:x+PATCH_SIZE//2])
                 no_background_color = (255,0,255)
                 background_index = np.all(background != no_background_color, axis=-1)
                 selected_background = background[background_index]
@@ -175,42 +186,86 @@ def generator(ids, training = True):
                   if patch_id in stats_dict:
                     selected_background_mean,selected_background_std  = stats_dict[patch_id]
                   else:
-                    selected_background_mean = np.mean(selected_background)
-                    selected_background_std  = np.std(selected_background)
+                    selected_background_mean = np.mean(selected_background, axis=(0,1))
+                    selected_background_std  = np.std(selected_background, axis=(0,1))
                     stats_dict[patch_id] = (selected_background_mean, selected_background_std)
 
                   background[~background_index] = \
-                    np.random.normal(loc=selected_background_mean, scale=selected_background_std, size=3*PATCH_SIZE**2-selected_background.size).reshape(-1,3)
+                    np.random.normal(loc=selected_background_mean, scale=selected_background_std, size=(PATCH_SIZE**2-(selected_background.size//3), 3))
               # img, mask = randomShiftScaleRotate(img, mask,
               #                                   shift_limit=(-0.0625, 0.0625),
               #                                   scale_limit=(-0.1, 0.1),
               #                                   rotate_limit=(-0, 0))
               if training:
-                if args.use_background:
-                  img, mask, background = randomHorizontalFlip(img, mask, background)
-                else:
-                  img, mask = randomHorizontalFlip(img, mask)
+                if not args.use_background and args.augmentation_tps:
+                  #print(img.shape, mask.shape)
+                  img, mask = tps({'img': img, 'mask': mask, 'seed': random.randint(0,1000)})
+                  img = cv2.resize(img, (input_size, input_size), interpolation=cv2.INTER_CUBIC)
+                  mask = cv2.resize(mask, (input_size, input_size), interpolation=cv2.INTER_LINEAR)
+                  #if i == 0:
+                  #  cv2.imwrite("img.jpg", img)
+                  #i += 1
+                  #print(img.shape, mask.shape)
+
+                if args.augmentation_flips:
+                  if args.use_background:
+                    img, mask, background = randomHorizontalFlip(img, mask, background)
+                  else:
+                    img, mask = randomHorizontalFlip(img, mask)
 
               mask = np.expand_dims(mask, axis=2)
               if args.use_background:
                 x_batch.append(np.concatenate((img, background), axis=2))
               else:
+                # Remove train image mean
+                img = img.astype(np.float32) - np.float32([103.939, 116.779, 123.68])
+
+                #img = preprocess_for_model(img.astype(np.float32))
                 x_batch.append(img)
               y_batch.append(mask)
               if img.shape != (PATCH_SIZE, PATCH_SIZE, 3):
                 print(id)
-          x_batch = np.array(x_batch, np.float32) / 255.
+          x_batch = np.array(x_batch, np.float32) 
           y_batch = np.array(y_batch, np.float32) / 255.
           yield x_batch, y_batch
 
-model_name = 'unet_' + ('background_' if args.use_background else '') + str(PATCH_SIZE)
-get_unet = getattr(u_net, 'get_'+ model_name)
-model = get_unet(input_shape=(input_size, input_size, 6 if args.use_background else 3))
+if not args.load_model:
+  model_name = args.model
+  model = getattr(u_net, 'get_'+ model_name)(input_shape=(input_size, input_size, 6 if args.use_background else 3))
+else:
+  print("Loading model " + args.load_model)
+
+  # monkey-patch loss so model loads ok
+  # https://github.com/fchollet/keras/issues/5916#issuecomment-290344248
+  import keras.losses
+  import keras.metrics
+  keras.losses.bce_dice_loss = bce_dice_loss
+  keras.metrics.dice_loss = dice_loss
+  keras.metrics.dice_loss100 = dice_loss100
+
+  model = load_model(args.load_model, compile=False)
+  match = re.search(r'patchesnet-([a-z]+)(_([0-9]+)_([0-9]+))?-s\d-epoch(\d+)-.*', args.model)
+  model_name = match.group(1).split("__")[0]
+  last_epoch = int(match.group(5)) + 1
+
+if args.load_weights:
+  model.load_weights(filepath=join(WEIGHTS_DIR, args.load_weights, by_name=True))
+
 model.summary()
-model.get_layer('instance_normalization_1').name='instance_normalization_1_bg'
-model.get_layer('conv2d_1').name='conv2d_1_bg'
-model.get_layer('conv2d_25').name='conv2d_25_bg'
-model.load_weights(filepath=join(WEIGHTS_DIR, 'patchesnet_unet256_noaug_sym_pad'), by_name=True)
+#model.get_layer('instance_normalization_1').name='instance_normalization_1_bg_axisNone'
+#model.get_layer('conv2d_1').name='conv2d_1_bg'
+#model.get_layer('conv2d_25').name='conv2d_25_bg'
+
+
+
+#model.get_layer('conv2d_28').name='conv2d_28_deconv'
+#model.get_layer('conv2d_22').name='conv2d_22_deconv'
+#model.get_layer('conv2d_16').name='conv2d_16_deconv'
+#model.get_layer('conv2d_13').name='conv2d_13_deconv'
+#model.load_weights(filepath=join(WEIGHTS_DIR, 'patchesnet-unet_background_256-epoch00-val_dice0.994335'), by_name=True)
+#model.load_weights(filepath=join(WEIGHTS_DIR, 'patchesnet-unet_256-epoch00-val_dice0.992748'), by_name=True)
+
+suffix = "__" + args.suffix if args.suffix is not None else ""
 
 callbacks = [EarlyStopping(monitor='val_dice_loss100',
                            patience=5,
@@ -224,13 +279,14 @@ callbacks = [EarlyStopping(monitor='val_dice_loss100',
                                epsilon=1e-4,
                                mode='max'),
              ModelCheckpoint(monitor='val_dice_loss100',
-                             filepath=join(WEIGHTS_DIR,"patchesnet-"+ model_name + "-epoch{epoch:02d}-val_dice{val_dice_loss:.6f}"),
+                             filepath=join(WEIGHTS_DIR,"patchesnet-"+ model_name + suffix + "-epoch{epoch:02d}-val_dice{val_dice_loss:.6f}"),
                              save_best_only=True,
-                             save_weights_only=True,
+                             save_weights_only=False,
                              mode='max')]
 
 if args.gpus != 1:
   model = to_multi_gpu(model,n_gpus=args.gpus)
+
 if args.optimizer == 'adam':
   optimizer=Adam(lr=args.learning_rate)
 elif args.optimizer == 'nadam':
