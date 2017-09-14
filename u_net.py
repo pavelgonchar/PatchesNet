@@ -13,6 +13,9 @@ from keras.layers import Input, Conv2D, Conv2DTranspose
 from keras.layers import MaxPooling2D, Cropping2D, Concatenate
 from keras.layers import Lambda, Activation, BatchNormalization, Dropout
 from keras.models import Model
+from keras import initializers
+from keras.engine import Layer, InputSpec
+
 
 def weighted_bce_loss(y_true, y_pred, weight):
     # avoiding overflow
@@ -1017,48 +1020,239 @@ def get_dilated_unet(input_shape=(256, 256, 3), features=64, depth=3,
 
     return Model(inputs=inputs, outputs=segmentation)
 
-def gcn(i, k, filters=1):
-    left  = Conv2D(filters, kernel_size=(k,1), padding='same')(i)
-    left  = Conv2D(filters, kernel_size=(1,k), padding='same')(left)
-    right = Conv2D(filters, kernel_size=(1,k), padding='same')(i)
-    right = Conv2D(filters, kernel_size=(k,1), padding='same')(right)
+def gcn(i, k, n, filters=1):
+    left  = Conv2D(filters, kernel_size=(k,1), padding='same', name=n + '_l0')(i)
+    left  = Conv2D(filters, kernel_size=(1,k), padding='same', name=n + '_l1')(left)
+    right = Conv2D(filters, kernel_size=(1,k), padding='same', name=n + '_r0')(i)
+    right = Conv2D(filters, kernel_size=(k,1), padding='same', name=n + '_r1')(right)
     return add([left, right])
 
-def br(input, filters=1):
-    res = Conv2D(filters, kernel_size=(3,3), padding='same', activation='relu')(input)
-    res = Conv2D(filters, kernel_size=(3,3), padding='same')(res)
-    return add([res, input])
+def br(i, n, filters=1):
+    res = Conv2D(filters, kernel_size=(3,3), padding='same', activation='relu', name=n + '_c0')(i)
+    res = Conv2D(filters, kernel_size=(3,3), padding='same', name=n + '_c1')(res)
+    res = Conv2D(i._keras_shape[-1], kernel_size=(1,1), padding='same', name=n + '_c2')(res)
+    return add([res, i])
+
+class Scale(Layer):
+    '''Custom Layer for ResNet used for BatchNormalization.
+    
+    Learns a set of weights and biases used for scaling the input data.
+    the output consists simply in an element-wise multiplication of the input
+    and a sum of a set of constants:
+
+        out = in * gamma + beta,
+
+    where 'gamma' and 'beta' are the weights and biases larned.
+
+    # Arguments
+        axis: integer, axis along which to normalize in mode 0. For instance,
+            if your input tensor has shape (samples, channels, rows, cols),
+            set axis to 1 to normalize per feature map (channels axis).
+        momentum: momentum in the computation of the
+            exponential average of the mean and standard deviation
+            of the data, for feature-wise normalization.
+        weights: Initialization weights.
+            List of 2 Numpy arrays, with shapes:
+            `[(input_shape,), (input_shape,)]`
+        beta_init: name of initialization function for shift parameter
+            (see [initializers](../initializers.md)), or alternatively,
+            Theano/TensorFlow function to use for weights initialization.
+            This parameter is only relevant if you don't pass a `weights` argument.
+        gamma_init: name of initialization function for scale parameter (see
+            [initializers](../initializers.md)), or alternatively,
+            Theano/TensorFlow function to use for weights initialization.
+            This parameter is only relevant if you don't pass a `weights` argument.
+    '''
+    def __init__(self, weights=None, axis=-1, momentum = 0.9, beta_init='zero', gamma_init='one', **kwargs):
+        self.momentum = momentum
+        self.axis = axis
+        self.beta_init = initializers.get(beta_init)
+        self.gamma_init = initializers.get(gamma_init)
+        self.initial_weights = weights
+        super(Scale, self).__init__(**kwargs)
+
+    def build(self, input_shape):
+        self.input_spec = [InputSpec(shape=input_shape)]
+        shape = (int(input_shape[self.axis]),)
+
+        self.gamma = K.variable(self.gamma_init(shape), name='%s_gamma'%self.name)
+        self.beta = K.variable(self.beta_init(shape), name='%s_beta'%self.name)
+        self.trainable_weights = [self.gamma, self.beta]
+
+        if self.initial_weights is not None:
+            self.set_weights(self.initial_weights)
+            del self.initial_weights
+
+    def call(self, x, mask=None):
+        input_shape = self.input_spec[0].shape
+        broadcast_shape = [1] * len(input_shape)
+        broadcast_shape[self.axis] = input_shape[self.axis]
+
+        out = K.reshape(self.gamma, broadcast_shape) * x + K.reshape(self.beta, broadcast_shape)
+        return out
+
+    def get_config(self):
+        config = {"momentum": self.momentum, "axis": self.axis}
+        base_config = super(Scale, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))
+
+def identity_block(input_tensor, kernel_size, filters, stage, block):
+    '''The identity_block is the block that has no conv layer at shortcut
+    # Arguments
+        input_tensor: input tensor
+        kernel_size: defualt 3, the kernel size of middle conv layer at main path
+        filters: list of integers, the nb_filters of 3 conv layer at main path
+        stage: integer, current stage label, used for generating layer names
+        block: 'a','b'..., current block label, used for generating layer names
+    '''
+    eps = 1.1e-5
+    nb_filter1, nb_filter2, nb_filter3 = filters
+    conv_name_base = 'res' + str(stage) + block + '_branch'
+    bn_name_base = 'bn' + str(stage) + block + '_branch'
+    scale_name_base = 'scale' + str(stage) + block + '_branch'
+
+    x = Conv2D(nb_filter1, (1, 1), name=conv_name_base + '2a', use_bias=False)(input_tensor)
+    x = BatchNormalization(epsilon=eps, axis=bn_axis, name=bn_name_base + '2a')(x)
+    x = Scale(axis=bn_axis, name=scale_name_base + '2a')(x)
+    x = Activation('relu', name=conv_name_base + '2a_relu')(x)
+
+    x = ZeroPadding2D((1, 1), name=conv_name_base + '2b_zeropadding')(x)
+    x = Conv2D(nb_filter2, (kernel_size, kernel_size), name=conv_name_base + '2b', use_bias=False)(x)
+    x = BatchNormalization(epsilon=eps, axis=bn_axis, name=bn_name_base + '2b')(x)
+    x = Scale(axis=bn_axis, name=scale_name_base + '2b')(x)
+    x = Activation('relu', name=conv_name_base + '2b_relu')(x)
+
+    x = Conv2D(nb_filter3, (1, 1), name=conv_name_base + '2c', use_bias=False)(x)
+    x = BatchNormalization(epsilon=eps, axis=bn_axis, name=bn_name_base + '2c')(x)
+    x = Scale(axis=bn_axis, name=scale_name_base + '2c')(x)
+
+    x = add([x, input_tensor], name='res' + str(stage) + block)
+    x = Activation('relu', name='res' + str(stage) + block + '_relu')(x)
+    return x
+
+def conv_block(input_tensor, kernel_size, filters, stage, block, strides=(2, 2)):
+    '''conv_block is the block that has a conv layer at shortcut
+    # Arguments
+        input_tensor: input tensor
+        kernel_size: defualt 3, the kernel size of middle conv layer at main path
+        filters: list of integers, the nb_filters of 3 conv layer at main path
+        stage: integer, current stage label, used for generating layer names
+        block: 'a','b'..., current block label, used for generating layer names
+    Note that from stage 3, the first conv layer at main path is with subsample=(2,2)
+    And the shortcut should have subsample=(2,2) as well
+    '''
+    eps = 1.1e-5
+    nb_filter1, nb_filter2, nb_filter3 = filters
+    conv_name_base = 'res' + str(stage) + block + '_branch'
+    bn_name_base = 'bn' + str(stage) + block + '_branch'
+    scale_name_base = 'scale' + str(stage) + block + '_branch'
+
+    x = Conv2D(nb_filter1, (1, 1), strides=strides, name=conv_name_base + '2a', use_bias=False)(input_tensor)
+    x = BatchNormalization(epsilon=eps, axis=bn_axis, name=bn_name_base + '2a')(x)
+    x = Scale(axis=bn_axis, name=scale_name_base + '2a')(x)
+    x = Activation('relu', name=conv_name_base + '2a_relu')(x)
+
+    x = ZeroPadding2D((1, 1), name=conv_name_base + '2b_zeropadding')(x)
+    x = Conv2D(nb_filter2, (kernel_size, kernel_size),
+                      name=conv_name_base + '2b', use_bias=False)(x)
+    x = BatchNormalization(epsilon=eps, axis=bn_axis, name=bn_name_base + '2b')(x)
+    x = Scale(axis=bn_axis, name=scale_name_base + '2b')(x)
+    x = Activation('relu', name=conv_name_base + '2b_relu')(x)
+
+    x = Conv2D(nb_filter3, (1, 1), name=conv_name_base + '2c', use_bias=False)(x)
+    x = BatchNormalization(epsilon=eps, axis=bn_axis, name=bn_name_base + '2c')(x)
+    x = Scale(axis=bn_axis, name=scale_name_base + '2c')(x)
+
+    shortcut = Conv2D(nb_filter3, (1, 1), strides=strides,
+                             name=conv_name_base + '1', use_bias=False)(input_tensor)
+    shortcut = BatchNormalization(epsilon=eps, axis=bn_axis, name=bn_name_base + '1')(shortcut)
+    shortcut = Scale(axis=bn_axis, name=scale_name_base + '1')(shortcut)
+
+    x = add([x, shortcut], name='res' + str(stage) + block)
+    x = Activation('relu', name='res' + str(stage) + block + '_relu')(x)
+    return x
 
 def get_largekernels(input_shape=(256, 256, 3), k=15):
 
-    resnet = ResNet50(weights = "imagenet", include_top=False, input_shape = input_shape)
+    '''Instantiate the ResNet152 architecture,
+    # Arguments
+        weights_path: path to pretrained weight file
+    # Returns
+        A Keras model instance.
+    '''
+    eps = 1.1e-5
 
-    for layer in resnet.layers:
-        layer.trainable = True #False
-    #                                                     Paper       |   Resnet50
-    res2  = resnet.get_layer('activation_1').output  # 128x 128x  256 | 128x 128x   64
-    _res3 = resnet.get_layer('activation_10').output #  64x  64x  512 |  63x  63x  256
-    res3  = ZeroPadding2D(padding=((0, 1),(0,1)))(_res3)
-    res4  = resnet.get_layer('activation_22').output #  32x  32x 1024 |  32x  32x  512
-    res5  = resnet.get_layer('activation_40').output #  16x  16x 2048 |  16x  16x 1024
+    # Handle Dimension Ordering for different backends
+    global bn_axis
+    if K.image_dim_ordering() == 'tf':
+        bn_axis = 3
+        img_input = Input(shape=input_shape, name='data')
+    else:
+        bn_axis = 1
+        img_input = Input(shape=input_shape, name='data')
 
-    br2  = br(gcn(res2, k))
-    br3  = br(gcn(res3, k))
-    br4  = br(gcn(res4, k))
-    br5  = br(gcn(res5, k))
+    #x = InstanceNormalization(axis=None, name='lkm_in0')(img_input)
+            
+    x = ZeroPadding2D((3, 3), name='conv1_zeropadding')(img_input)
+    x = Conv2D(64, (7, 7), strides=(2, 2), name='conv1', use_bias=False)(x)
+    x = BatchNormalization(epsilon=eps, axis=bn_axis, name='bn_conv1')(x)
+    x = Scale(axis=bn_axis, name='scale_conv1')(x)
+    x = Activation('relu', name='conv1_relu')(x)
+    res2 = x
 
-    ff = 1
+    x = MaxPooling2D((3, 3), strides=(2, 2), name='pool1', padding='same')(x)
+    x = conv_block(x, 3, [64, 64, 256], stage=2, block='a', strides=(1, 1))
+    x = identity_block(x, 3, [64, 64, 256], stage=2, block='b')
+    x = identity_block(x, 3, [64, 64, 256], stage=2, block='c')
 
-    u5   = Conv2DTranspose(ff, kernel_size=(2,2), strides=(2,2))(br5)  #  32 x  32
-    br4a = br(add([u5,br4]))
-    u4  =  Conv2DTranspose(ff, kernel_size=(2,2), strides=(2,2))(br4a) #  64 x  64
-    br3a = br(add([u4,br3]))
-    u3  =  Conv2DTranspose(ff, kernel_size=(2,2), strides=(2,2))(br3a) # 128 x 128
-    br2a = br(add([u3,br2]))
-    u2  =  Conv2DTranspose(ff, kernel_size=(2,2), strides=(2,2))(br2a) # 256 x 256
+    res3 = x
 
-    segmentation = Conv2D(1, (1, 1), activation='sigmoid')(u2)
+    x = conv_block(x, 3, [128, 128, 512], stage=3, block='a')
+    for i in range(1,8):
+        x = identity_block(x, 3, [128, 128, 512], stage=3, block='b'+str(i))
 
-    model = Model(inputs=resnet.input, outputs=segmentation)
+    res4 = x
+
+    x = conv_block(x, 3, [256, 256, 1024], stage=4, block='a')
+    for i in range(1,36):
+        x = identity_block(x, 3, [256, 256, 1024], stage=4, block='b'+str(i))
+
+    res5 = x
+
+    x = conv_block(x, 3, [512, 512, 2048], stage=5, block='a')
+    x = identity_block(x, 3, [512, 512, 2048], stage=5, block='b')
+    x = identity_block(x, 3, [512, 512, 2048], stage=5, block='c')
+
+    res6 = x
+
+    ff = 64
+
+    br6  = br(gcn(res6, k, n='lkm_gcn6', filters = ff//(2**0)), filters = ff//(2**1), n='lkm_br6') # 2048 -> 1024
+    br5  = br(gcn(res5, k, n='lkm_gcn5', filters = ff//(2**1)), filters = ff//(2**2), n='lkm_br5')
+    br4  = br(gcn(res4, k, n='lkm_gcn4', filters = ff//(2**2)), filters = ff//(2**3), n='lkm_br4')
+    br3  = br(gcn(res3, k, n='lkm_gcn3', filters = ff//(2**3)), filters = ff//(2**4), n='lkm_br3')
+    br2  = br(gcn(res2, k, n='lkm_gcn2', filters = ff//(2**4)), filters = ff//(2**5), n='lkm_br2')
+
+    u6   = Conv2DTranspose( ff//(2**1), kernel_size=(2,2), strides=(2,2), name='lkm_u6')(br6)  #  32 x  32
+    br5a = br(add([u6,br5]), n='lkm_br5a')
+    u5   = Conv2DTranspose( ff//(2**2), kernel_size=(2,2), strides=(2,2), name='lkm_u5')(br5a)  #  32 x  32
+    br4a = br(add([u5,br4]), n='lkm_br4a')
+    u4  =  Conv2DTranspose( ff//(2**3), kernel_size=(2,2), strides=(2,2), name='lkm_u4')(br4a) #  64 x  64
+    br3a = br(add([u4,br3]), n='lkm_br3a')
+    u3  =  Conv2DTranspose( ff//(2**4), kernel_size=(2,2), strides=(2,2), name='lkm_u3')(br3a) # 128 x 128
+    br2a = br(add([u3,br2]), n='lkm_br2a')
+    u2  =  Conv2DTranspose( ff//(2**4), kernel_size=(2,2), strides=(2,2), name='lkm_u2')(br2a) # 256 x 256
+
+    segmentation = Conv2D(1, (1, 1), activation='sigmoid', name='lkm_segmentation')(u2)
+
+    model = Model(inputs=img_input, outputs=segmentation)
+    model.load_weights("resnet152_weights_tf.h5", by_name=True)
+
+    for layer in model.layers:
+        if layer.name.startswith("lkm"):
+            layer.trainable = True
+        else:
+            layer.trainable = False
+
 
     return model
