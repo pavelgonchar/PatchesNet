@@ -55,6 +55,7 @@ parser.add_argument('-at', '--augmentation-tps', action='store_true', help='TPS 
 parser.add_argument('-af', '--augmentation-flips', action='store_true', help='Flips augmentation')
 parser.add_argument('-s', '--suffix', type=str, default=None, help='Suffix for saving model name')
 parser.add_argument('-m', '--model', type=str, default='dilated_unet', help='Use model, e.g. -m dilated_unet -m unet_256, unet_bg_256, largekernels')
+parser.add_argument('-f', '--fractional-epoch', type=int, default=1, help='Reduce epoch steps by factor, e.g. -f 10 (after 10 epochs all samples would have been seen) ')
 
 args = parser.parse_args()  
 
@@ -311,7 +312,7 @@ else:
 model.compile(optimizer=optimizer, loss=bce_dice_loss, metrics=[dice_loss, dice_loss100])
 model.fit_generator(generator=generator(ids = ids_train_split, training=True),
                     steps_per_epoch=np.ceil(
-                        float(len(ids_train_split)) / float(batch_size)),
+                        float(len(ids_train_split)) / float(batch_size)) // args.fractional_epoch,
                     epochs=args.max_epoch,
                     verbose=1,
                     callbacks=callbacks,
