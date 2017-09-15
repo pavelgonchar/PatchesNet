@@ -1096,7 +1096,7 @@ class Scale(Layer):
         base_config = super(Scale, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
 
-def identity_block(input_tensor, kernel_size, filters, stage, block):
+def identity_block(input_tensor, kernel_size, filters, stage, block, preffix=''):
     '''The identity_block is the block that has no conv layer at shortcut
     # Arguments
         input_tensor: input tensor
@@ -1107,9 +1107,9 @@ def identity_block(input_tensor, kernel_size, filters, stage, block):
     '''
     eps = 1.1e-5
     nb_filter1, nb_filter2, nb_filter3 = filters
-    conv_name_base = 'res' + str(stage) + block + '_branch'
-    bn_name_base = 'bn' + str(stage) + block + '_branch'
-    scale_name_base = 'scale' + str(stage) + block + '_branch'
+    conv_name_base = preffix + 'res' + str(stage) + block + '_branch'
+    bn_name_base = preffix + 'bn' + str(stage) + block + '_branch'
+    scale_name_base = preffix + 'scale' + str(stage) + block + '_branch'
 
     x = Conv2D(nb_filter1, (1, 1), name=conv_name_base + '2a', use_bias=False)(input_tensor)
     x = BatchNormalization(epsilon=eps, axis=bn_axis, name=bn_name_base + '2a')(x)
@@ -1126,11 +1126,11 @@ def identity_block(input_tensor, kernel_size, filters, stage, block):
     x = BatchNormalization(epsilon=eps, axis=bn_axis, name=bn_name_base + '2c')(x)
     x = Scale(axis=bn_axis, name=scale_name_base + '2c')(x)
 
-    x = add([x, input_tensor], name='res' + str(stage) + block)
-    x = Activation('relu', name='res' + str(stage) + block + '_relu')(x)
+    x = add([x, input_tensor], name=preffix + 'res' + str(stage) + block)
+    x = Activation('relu', name=preffix + 'res' + str(stage) + block + '_relu')(x)
     return x
 
-def conv_block(input_tensor, kernel_size, filters, stage, block, strides=(2, 2)):
+def conv_block(input_tensor, kernel_size, filters, stage, block, strides=(2, 2), preffix=''):
     '''conv_block is the block that has a conv layer at shortcut
     # Arguments
         input_tensor: input tensor
@@ -1143,9 +1143,9 @@ def conv_block(input_tensor, kernel_size, filters, stage, block, strides=(2, 2))
     '''
     eps = 1.1e-5
     nb_filter1, nb_filter2, nb_filter3 = filters
-    conv_name_base = 'res' + str(stage) + block + '_branch'
-    bn_name_base = 'bn' + str(stage) + block + '_branch'
-    scale_name_base = 'scale' + str(stage) + block + '_branch'
+    conv_name_base = preffix + 'res' + str(stage) + block + '_branch'
+    bn_name_base = preffix + 'bn' + str(stage) + block + '_branch'
+    scale_name_base = preffix + 'scale' + str(stage) + block + '_branch'
 
     x = Conv2D(nb_filter1, (1, 1), strides=strides, name=conv_name_base + '2a', use_bias=False)(input_tensor)
     x = BatchNormalization(epsilon=eps, axis=bn_axis, name=bn_name_base + '2a')(x)
@@ -1168,8 +1168,8 @@ def conv_block(input_tensor, kernel_size, filters, stage, block, strides=(2, 2))
     shortcut = BatchNormalization(epsilon=eps, axis=bn_axis, name=bn_name_base + '1')(shortcut)
     shortcut = Scale(axis=bn_axis, name=scale_name_base + '1')(shortcut)
 
-    x = add([x, shortcut], name='res' + str(stage) + block)
-    x = Activation('relu', name='res' + str(stage) + block + '_relu')(x)
+    x = add([x, shortcut], name=preffix + 'res' + str(stage) + block)
+    x = Activation('relu', name=preffix + 'res' + str(stage) + block + '_relu')(x)
     return x
 
 def get_largekernels(input_shape=(256, 256, 3), k=15):
@@ -1192,6 +1192,11 @@ def get_largekernels(input_shape=(256, 256, 3), k=15):
         img_input = Input(shape=input_shape, name='data')
 
     #x = InstanceNormalization(axis=None, name='lkm_in0')(img_input)
+
+    res1 = Scale(axis=bn_axis, name='lkm_scale_conv1')(img_input)
+    res1 = conv_block(res1, 3, [32, 32, 128], stage=1, block='a', strides=(1, 1), preffix='lkm_')
+    res1 = identity_block(res1, 3, [32, 32, 128], stage=1, block='b', preffix='lkm_')
+    res1 = identity_block(res1, 3, [32, 32, 128], stage=1, block='c', preffix='lkm_')
             
     x = ZeroPadding2D((3, 3), name='conv1_zeropadding')(img_input)
     x = Conv2D(64, (7, 7), strides=(2, 2), name='conv1', use_bias=False)(x)
@@ -1232,18 +1237,20 @@ def get_largekernels(input_shape=(256, 256, 3), k=15):
     br4  = br(gcn(res4, k, n='lkm_gcn4', filters = ff//(2**2)), filters = ff//(2**3), n='lkm_br4')
     br3  = br(gcn(res3, k, n='lkm_gcn3', filters = ff//(2**3)), filters = ff//(2**4), n='lkm_br3')
     br2  = br(gcn(res2, k, n='lkm_gcn2', filters = ff//(2**4)), filters = ff//(2**5), n='lkm_br2')
+    br1  = br(gcn(res1, k, n='lkm_gcn1', filters = ff//(2**5)), filters = ff//(2**6), n='lkm_br1')
 
     u6   = Conv2DTranspose( ff//(2**1), kernel_size=(2,2), strides=(2,2), name='lkm_u6')(br6)  #  32 x  32
-    br5a = br(add([u6,br5]), n='lkm_br5a')
+    br5a = br(add([u6,br5]), n='lkm_br5a', filters=ff//(2**1))
     u5   = Conv2DTranspose( ff//(2**2), kernel_size=(2,2), strides=(2,2), name='lkm_u5')(br5a)  #  32 x  32
-    br4a = br(add([u5,br4]), n='lkm_br4a')
+    br4a = br(add([u5,br4]), n='lkm_br4a', filters=ff//(2**2))
     u4  =  Conv2DTranspose( ff//(2**3), kernel_size=(2,2), strides=(2,2), name='lkm_u4')(br4a) #  64 x  64
-    br3a = br(add([u4,br3]), n='lkm_br3a')
+    br3a = br(add([u4,br3]), n='lkm_br3a', filters=ff//(2**3))
     u3  =  Conv2DTranspose( ff//(2**4), kernel_size=(2,2), strides=(2,2), name='lkm_u3')(br3a) # 128 x 128
-    br2a = br(add([u3,br2]), n='lkm_br2a')
-    u2  =  Conv2DTranspose( ff//(2**4), kernel_size=(2,2), strides=(2,2), name='lkm_u2')(br2a) # 256 x 256
+    br2a = br(add([u3,br2]), n='lkm_br2a', filters=ff//(2**4))
+    u2  =  Conv2DTranspose( ff//(2**5), kernel_size=(2,2), strides=(2,2), name='lkm_u2')(br2a) # 256 x 256
+    br1a = br(add([u2,br1]), n='lkm_br1a', filters=ff//(2**5))
 
-    segmentation = Conv2D(1, (1, 1), activation='sigmoid', name='lkm_segmentation')(u2)
+    segmentation = Conv2D(1, (1, 1), activation='sigmoid', name='lkm_segmentation')(br1a)
 
     model = Model(inputs=img_input, outputs=segmentation)
     model.load_weights("resnet152_weights_tf.h5", by_name=True)

@@ -20,7 +20,7 @@ def slice_batch(x, n_gpus, part):
 
 def to_multi_gpu(model, n_gpus=2):
     if n_gpus ==1:
-	return model
+	   return model
     
     with tf.device('/cpu:0'):
         x = Input(model.input_shape[1:])
@@ -34,5 +34,12 @@ def to_multi_gpu(model, n_gpus=2):
         # Deprecated
  	#merged = merge(towers, mode='concat', concat_axis=0)
 	merged = Concatenate(axis=0)(towers)
-    return Model(inputs=[x], outputs=merged)
 
+    new_model = Model(inputs=[x], outputs=merged)
+    funcType = type(model.save)
+
+    # monkeypatch the save to save just the underlying model
+    def new_save(self_,filepath, overwrite=True):
+            model.save(filepath, overwrite)
+    new_model.save=funcType(new_save, new_model)
+    return new_model

@@ -3,11 +3,13 @@ import numpy as np
 import pandas as pd
 from keras.callbacks import EarlyStopping, ReduceLROnPlateau, ModelCheckpoint, TensorBoard
 from keras.optimizers import SGD, Adam, RMSprop, Nadam
+from keras.models import load_model
+from keras.engine.training import Model
 
 from sklearn.model_selection import train_test_split
 import glob
 import u_net
-from u_net import bce_dice_loss, dice_loss, dice_loss100
+from u_net import bce_dice_loss, dice_loss, dice_loss100, Scale
 import os
 import scipy.misc as misc
 import random
@@ -18,6 +20,7 @@ import argparse
 from multi_gpu import to_multi_gpu
 import csv
 from tps import tps
+import re
 
 from keras.applications.imagenet_utils import preprocess_input as preprocess_input_imagenet
 
@@ -243,10 +246,18 @@ else:
   keras.metrics.dice_loss = dice_loss
   keras.metrics.dice_loss100 = dice_loss100
 
-  model = load_model(args.load_model, compile=False)
-  match = re.search(r'patchesnet-([a-z]+)(_([0-9]+)_([0-9]+))?-s\d-epoch(\d+)-.*', args.model)
+  model = load_model(args.load_model, compile=False, custom_objects = { 'Scale' : Scale})
+  match = re.search(r'patchesnet-([_a-z]+)-epoch(\d+)-.*', args.load_model)
   model_name = match.group(1).split("__")[0]
-  last_epoch = int(match.group(5)) + 1
+  last_epoch = int(match.group(2)) + 1
+
+  for layer in model.layers:
+    layer.trainable = True
+    if isinstance(layer, Model):
+      for _layer in layer.layers:
+        _layer.trainable = True  
+    #assert False
+
 
 if args.load_weights:
   model.load_weights(filepath=join(WEIGHTS_DIR, args.load_weights, by_name=True))
