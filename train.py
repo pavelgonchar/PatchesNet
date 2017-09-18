@@ -22,8 +22,6 @@ import csv
 from tps import tps
 import re
 
-from keras.applications.imagenet_utils import preprocess_input as preprocess_input_imagenet
-
 ROOT_DIR = '/data/pavel/carv'
 WEIGHTS_DIR = '../PatchesNet-binaries/weights'
 
@@ -40,7 +38,7 @@ def mkdir_p(path):
 mkdir_p(WEIGHTS_DIR)
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--max-epoch', type=int, default=50, help='Epoch to run')
+parser.add_argument('--max-epoch', type=int, default=200, help='Epoch to run')
 parser.add_argument('-b', '--batch-size', type=int, default=16, help='Batch Size during training, e.g. -b 32')
 parser.add_argument('-l', '--learning-rate', type=float, default=1e-2, help='Initial learning rate, e.g. -l 1e-2')
 parser.add_argument('-lw', '--load-weights', type=str, help='load model weights (and continue training)')
@@ -59,7 +57,10 @@ parser.add_argument('-f', '--fractional-epoch', type=int, default=1, help='Reduc
 
 args = parser.parse_args()  
 
-preprocess_for_model = preprocess_input_imagenet if args.model == 'largekernels' else lambda x: x
+def preprocess_input_imagenet(img):
+  return img.astype(np.float32) - np.float32([103.939, 116.779, 123.68])
+
+preprocess_for_model = preprocess_input_imagenet if args.model == 'largekernels' else lambda x: x / 255.
 
 if args.cpu:
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
@@ -140,10 +141,10 @@ def randomShiftScaleRotate(image, mask,
 
 def randomHorizontalFlip(image, mask, background=None, u=0.5):
     if np.random.random() < u:
-        image = cv2.flip(image, 1)
-        mask = cv2.flip(mask, 1)
+        image = np.fliplr(image)
+        mask = np.fliplr(mask)
         if background is not None:
-          background = cv2.flip(background, 1)
+          background = np.fliplr(background)
 
     if background is not None:
       return image, mask, background
@@ -173,6 +174,7 @@ def generator(ids, training = True):
                     mask, (input_size, input_size), interpolation=cv2.INTER_LINEAR)
 
               if args.use_background:
+                background = None
                 car_id = id.split('_')[0]
                 if car_id in background_dict:
                   all_background = background_dict[car_id]
@@ -183,19 +185,33 @@ def generator(ids, training = True):
                 patch_id = '{}.jpg'.format(id)
                 x,y = patches_dict[patch_id]
                 background = np.copy(all_background[y-PATCH_SIZE//2:y+PATCH_SIZE//2,x-PATCH_SIZE//2:x+PATCH_SIZE//2])
+                #cv2.imwrite("bb.png", background)
+
                 no_background_color = (255,0,255)
                 background_index = np.all(background != no_background_color, axis=-1)
                 selected_background = background[background_index]
-                if selected_background.size > 0:
-                  if patch_id in stats_dict:
-                    selected_background_mean,selected_background_std  = stats_dict[patch_id]
-                  else:
-                    selected_background_mean = np.mean(selected_background, axis=(0,1))
-                    selected_background_std  = np.std(selected_background, axis=(0,1))
-                    stats_dict[patch_id] = (selected_background_mean, selected_background_std)
+                background_l2 = np.expand_dims(255 - np.linalg.norm(background - img, axis=2) / np.sqrt(3.), axis=2)
+                background_mask = np.zeros((PATCH_SIZE, PATCH_SIZE,1), dtype=np.uint8)
+                background_mask[background_index] = 255
+                selected_background_l2 = background_l2[background_index]
 
-                  background[~background_index] = \
-                    np.random.normal(loc=selected_background_mean, scale=selected_background_std, size=(PATCH_SIZE**2-(selected_background.size//3), 3))
+                #print(background_index.shape)
+                #print(selected_background_l2.shape)
+                if patch_id in stats_dict:
+                    selected_background_mean,selected_background_std  = stats_dict[patch_id]
+                else:                
+                  if selected_background.size > 0:
+                    selected_background_mean = np.mean(selected_background_l2)
+                    selected_background_std  = np.std(selected_background_l2)
+                  else:
+                    selected_background_mean = np.mean(img)
+                    selected_background_std  = np.std(img)                    
+                  stats_dict[patch_id] = (selected_background_mean, selected_background_std)
+
+                background_l2[~background_index] = \
+                  np.random.normal(loc=selected_background_mean, scale=selected_background_std, size=(PATCH_SIZE**2-(selected_background.size//3),1))
+
+                background = np.concatenate((background_l2, background_mask), axis=2)
               # img, mask = randomShiftScaleRotate(img, mask,
               #                                   shift_limit=(-0.0625, 0.0625),
               #                                   scale_limit=(-0.1, 0.1),
@@ -219,12 +235,13 @@ def generator(ids, training = True):
 
               mask = np.expand_dims(mask, axis=2)
               if args.use_background:
-                x_batch.append(np.concatenate((img, background), axis=2))
-              else:
-                # Remove train image mean
-                img = img.astype(np.float32) - np.float32([103.939, 116.779, 123.68])
+                #cv2.imwrite("i.jpg", img)
+                #cv2.imwrite("b.png", background[:,:,0])
+                #cv2.imwrite("bm.png", background[:,:,1])
 
-                #img = preprocess_for_model(img.astype(np.float32))
+                x_batch.append(preprocess_for_model(np.concatenate((img, background), axis=2).astype(np.float32)))
+              else:
+                img = preprocess_for_model(img.astype(np.float32))
                 x_batch.append(img)
               y_batch.append(mask)
               if img.shape != (PATCH_SIZE, PATCH_SIZE, 3):
@@ -233,9 +250,10 @@ def generator(ids, training = True):
           y_batch = np.array(y_batch, np.float32) / 255.
           yield x_batch, y_batch
 
+initial_epoch = 0
 if not args.load_model:
   model_name = args.model
-  model = getattr(u_net, 'get_'+ model_name)(input_shape=(input_size, input_size, 6 if args.use_background else 3))
+  model = getattr(u_net, 'get_'+ model_name)(input_shape=(input_size, input_size, 5 if args.use_background else 3))
 else:
   print("Loading model " + args.load_model)
 
@@ -250,18 +268,10 @@ else:
   model = load_model(args.load_model, compile=False, custom_objects = { 'Scale' : Scale})
   match = re.search(r'patchesnet-([_a-z]+)-epoch(\d+)-.*', args.load_model)
   model_name = match.group(1).split("__")[0]
-  last_epoch = int(match.group(2)) + 1
-
-  for layer in model.layers:
-    layer.trainable = True
-    if isinstance(layer, Model):
-      for _layer in layer.layers:
-        _layer.trainable = True  
-    #assert False
-
+  initial_epoch = int(match.group(2)) + 1
 
 if args.load_weights:
-  model.load_weights(filepath=join(WEIGHTS_DIR, args.load_weights, by_name=True))
+  model.load_weights(args.load_weights, by_name=True)
 
 model.summary()
 #model.get_layer('instance_normalization_1').name='instance_normalization_1_bg_axisNone'
@@ -277,15 +287,14 @@ model.summary()
 #model.load_weights(filepath=join(WEIGHTS_DIR, 'patchesnet-unet_background_256-epoch00-val_dice0.994335'), by_name=True)
 #model.load_weights(filepath=join(WEIGHTS_DIR, 'patchesnet-unet_256-epoch00-val_dice0.992748'), by_name=True)
 
+if args.use_background and args.suffix is None:
+  suffix = "bg"
+  
 suffix = "__" + args.suffix if args.suffix is not None else ""
 
-callbacks = [EarlyStopping(monitor='val_dice_loss100',
-                           patience=5,
-                           verbose=1,
-                           min_delta=1e-4,
-                           mode='max'),
-             ReduceLROnPlateau(monitor='val_dice_loss100',
-                               factor=0.1,
+
+callbacks = [ReduceLROnPlateau(monitor='val_dice_loss100',
+                               factor=0.5,
                                patience=4,
                                verbose=1,
                                epsilon=1e-4,
@@ -314,6 +323,7 @@ model.fit_generator(generator=generator(ids = ids_train_split, training=True),
                     steps_per_epoch=np.ceil(
                         float(len(ids_train_split)) / float(batch_size)) // args.fractional_epoch,
                     epochs=args.max_epoch,
+                    initial_epoch = initial_epoch,
                     verbose=1,
                     callbacks=callbacks,
                     validation_data=generator(ids = ids_valid_split, training=False),

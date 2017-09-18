@@ -15,6 +15,7 @@ from keras.layers import Lambda, Activation, BatchNormalization, Dropout
 from keras.models import Model
 from keras import initializers
 from keras.engine import Layer, InputSpec
+import math
 
 
 def weighted_bce_loss(y_true, y_pred, weight):
@@ -204,14 +205,14 @@ def get_unet_128(input_shape=(128, 128, 3),
     return model
 
 
-def get_unet_256(input_shape=(256, 256, 3),
-                 num_classes=1):
+def get_unet_256(input_shape=(256, 256, 3), naive_upsampling= True ):
+
     inputs = Input(shape=input_shape)
     inputs_normalized = InstanceNormalization(axis=3)(inputs)
-    naive_upsampling = False
 
     # 256
 
+    # receptive 365
     down0 = Conv2D(32, (3, 3), padding='same')(inputs_normalized)
     down0 = BatchNormalization()(down0)
     down0 = Activation('relu')(down0)
@@ -221,6 +222,7 @@ def get_unet_256(input_shape=(256, 256, 3),
     down0_pool = MaxPooling2D((2, 2), strides=(2, 2))(down0)
     # 128
 
+    # receptive 155
     down1 = Conv2D(64, (3, 3), padding='same')(down0_pool)
     down1 = BatchNormalization()(down1)
     down1 = Activation('relu')(down1)
@@ -230,6 +232,7 @@ def get_unet_256(input_shape=(256, 256, 3),
     down1_pool = MaxPooling2D((2, 2), strides=(2, 2))(down1)
     # 64
 
+    # receptive 75
     down2 = Conv2D(128, (3, 3), padding='same')(down1_pool)
     down2 = BatchNormalization()(down2)
     down2 = Activation('relu')(down2)
@@ -237,8 +240,9 @@ def get_unet_256(input_shape=(256, 256, 3),
     down2 = BatchNormalization()(down2)
     down2 = Activation('relu')(down2)
     down2_pool = MaxPooling2D((2, 2), strides=(2, 2))(down2)
-    # 32
 
+    # receptive 35
+    # 32
     down3 = Conv2D(256, (3, 3), padding='same')(down2_pool)
     down3 = BatchNormalization()(down3)
     down3 = Activation('relu')(down3)
@@ -248,6 +252,7 @@ def get_unet_256(input_shape=(256, 256, 3),
     down3_pool = MaxPooling2D((2, 2), strides=(2, 2))(down3)
     # 16
 
+    # receptive 15
     down4 = Conv2D(512, (3, 3), padding='same')(down3_pool)
     down4 = BatchNormalization()(down4)
     down4 = Activation('relu')(down4)
@@ -257,6 +262,7 @@ def get_unet_256(input_shape=(256, 256, 3),
     down4_pool = MaxPooling2D((2, 2), strides=(2, 2))(down4)
     # 8
 
+    # receptive 5
     center = Conv2D(1024, (3, 3), padding='same')(down4_pool)
     center = BatchNormalization()(center)
     center = Activation('relu')(center)
@@ -357,6 +363,97 @@ def get_unet_256(input_shape=(256, 256, 3),
     # 256
 
     classify = Conv2D(num_classes, (1, 1), activation='sigmoid')(up0)
+
+    model = Model(inputs=inputs, outputs=classify)
+
+    # model = to_multi_gpu(model,n_gpus=8)
+
+    return model
+
+def get_resunet(input_shape=(256, 256, 3), naive_upsampling= True, full_residual = False):
+
+    inputs = Input(shape=input_shape)
+    bg_preffix = 'rgbX_' if input_shape[2] != 3 else 'rgb_'
+
+    global bn_axis
+    if K.image_dim_ordering() == 'tf':
+        bn_axis = 3
+    else:
+        bn_axis = 1
+
+    inputs_normalized = InstanceNormalization(axis=bn_axis, name=bg_preffix + 'instancenormalization1')(inputs)
+
+    down = inputs_normalized
+
+    down_blocks = [32, 64, 128,  256, 512, 1024]
+    skips = []
+
+    scale = False
+
+    #  7   -> 14 + 7 -> 42 + 7 -> 98 +7 -> 210 + 7 = 217
+    # 512  -> 256    -> 128    -> 64    -> 32
+
+    trf = 0
+    erf = 0
+    residual_filter_factor = 4 if full_residual else 1
+    for i, block in enumerate(down_blocks):
+        first = i == 0
+        last  = i == (len(down_blocks) -1)
+
+        dilation = [1,1,1]
+        k = 3
+
+        def unet_block(input, kernel_size, filters, stage, block, filter_start=0, preffix=""):
+            x = input
+            for i, nb_filter in enumerate(filters):
+                suffix = str(stage) + "_" + block + "_" + str(i+filter_start)
+                x = Conv2D(nb_filter, kernel_size, padding='same', name=preffix + 'conv_' + suffix)(x)
+                x = BatchNormalization(name=preffix + 'bn_' + suffix)(x)
+                x = Activation('relu', name=preffix + 'act_' + suffix)(x)
+            return x
+
+        if not full_residual:
+            down = unet_block(down, k, [block, block], stage=i, block='down', preffix = bg_preffix if first else '')
+            down = conv_block(down, k, [block, block, block*residual_filter_factor], stage=i, block='down', strides=(1, 1), preffix=bg_preffix if first else '', zero_padding=False, scale=scale)
+        
+        if full_residual:
+            down = conv_block(down, k, [block, block, block*residual_filter_factor], stage=i, block='down', strides=(1, 1), preffix=bg_preffix if first else '', zero_padding=False, scale=scale)
+            down = identity_block(down, k, [block, block, block*residual_filter_factor], stage=i, block='down0', preffix='', zero_padding=False, scale=scale)
+            down = identity_block(down, k, [block, block, block*residual_filter_factor], stage=i, block='down1', preffix='', zero_padding=False, scale=scale)
+        rf = 1 + (k-1) * dilation[0] + (k-1) * dilation[1]+ (k-1) * dilation[2]
+        trf += rf
+        erf += rf / math.sqrt(3)
+
+        if not last:
+            skips.append(down)
+            down = MaxPooling2D((2, 2), strides=(2, 2))(down)
+            trf *= 2
+            erf *= 2
+
+    # see http://www.cs.toronto.edu/~wenjie/papers/nips16/top.pdf
+    print("Theoretical receptive field: " + str(trf) + " pixels")
+    print("Effective   receptive field: " + str(erf) + " pixels")
+
+    up = down
+    for i, block in enumerate(down_blocks[:-1][::-1]):
+        if naive_upsampling:
+            up = UpSampling2D((2, 2))(up)
+        else:
+            up = Conv2DTranspose(block, kernel_size=(2,2), strides=(2,2))(up)  
+        up = concatenate([up, skips.pop()], axis=3)
+        if not full_residual:
+            up = Conv2D(block, 3, padding='same')(up)
+            up = BatchNormalization()(up)
+            up = Activation('relu')(up)
+            up = Conv2D(block, 3, padding='same')(up)
+            up = BatchNormalization()(up)
+            up = Activation('relu')(up)
+        up = conv_block(up, 3, [block//1, block//1, block*residual_filter_factor], stage=i, block='up', strides=(1, 1), preffix='', zero_padding=False, scale=scale)
+        if full_residual:
+            up = identity_block(up, 3, [block, block, block*residual_filter_factor], stage=i, block='up0', preffix='', zero_padding=False, scale=scale)
+            up = identity_block(up, 3, [block, block, block*residual_filter_factor], stage=i, block='up1', preffix='', zero_padding=False, scale=scale)
+    
+    classify = Conv2D(1, (1, 1), activation='sigmoid')(up)
 
     model = Model(inputs=inputs, outputs=classify)
 
@@ -670,69 +767,88 @@ def get_unet_1024(input_shape=(1024, 1024, 3),
 
     # preprocess = BatchNormalization(center=False, scale=False,
     # name='preprocess')(inputs)
+
+    # receptive 1275
     down0b = Conv2D(4 * mult, (3, 3), padding='same')(inputs)
     down0b = BatchNormalization()(down0b)
     down0b = Activation('relu')(down0b)
     down0b = Conv2D(4 * mult, (3, 3), padding='same')(down0b)
     down0b = BatchNormalization()(down0b)
     down0b = Activation('relu')(down0b)
+
+    # receptive 1270
     down0b_pool = MaxPooling2D((2, 2), strides=(2, 2))(down0b)
     # 512
 
+    # receptive 635
     down0a = Conv2D(8 * mult, (3, 3), padding='same')(down0b_pool)
     down0a = BatchNormalization()(down0a)
     down0a = Activation('relu')(down0a)
     down0a = Conv2D(8 * mult, (3, 3), padding='same')(down0a)
     down0a = BatchNormalization()(down0a)
     down0a = Activation('relu')(down0a)
+    # receptive 630
     down0a_pool = MaxPooling2D((2, 2), strides=(2, 2))(down0a)
     # 256
 
+    # receptive 315
     down0 = Conv2D(16 * mult, (3, 3), padding='same')(down0a_pool)
     down0 = BatchNormalization()(down0)
     down0 = Activation('relu')(down0)
     down0 = Conv2D(16 * mult, (3, 3), padding='same')(down0)
     down0 = BatchNormalization()(down0)
     down0 = Activation('relu')(down0)
+
+    # receptive 310
     down0_pool = MaxPooling2D((2, 2), strides=(2, 2))(down0)
     # 128
 
+    # receptive 155
     down1 = Conv2D(32 * mult, (3, 3), padding='same')(down0_pool)
     down1 = BatchNormalization()(down1)
     down1 = Activation('relu')(down1)
     down1 = Conv2D(32 * mult, (3, 3), padding='same')(down1)
     down1 = BatchNormalization()(down1)
     down1 = Activation('relu')(down1)
+    # receptive 150
     down1_pool = MaxPooling2D((2, 2), strides=(2, 2))(down1)
     # 64
 
+    # receptive 75
     down2 = Conv2D(64 * mult, (3, 3), padding='same')(down1_pool)
     down2 = BatchNormalization()(down2)
     down2 = Activation('relu')(down2)
     down2 = Conv2D(64 * mult, (3, 3), padding='same')(down2)
     down2 = BatchNormalization()(down2)
     down2 = Activation('relu')(down2)
+    # receptive 70
     down2_pool = MaxPooling2D((2, 2), strides=(2, 2))(down2)
     # 32
 
+    # receptive 35
     down3 = Conv2D(128 * mult, (3, 3), padding='same')(down2_pool)
     down3 = BatchNormalization()(down3)
     down3 = Activation('relu')(down3)
     down3 = Conv2D(128 * mult, (3, 3), padding='same')(down3)
     down3 = BatchNormalization()(down3)
     down3 = Activation('relu')(down3)
+    # receptive 30
     down3_pool = MaxPooling2D((2, 2), strides=(2, 2))(down3)
     # 16
 
+    # receptive 15
     down4 = Conv2D(256 * mult, (3, 3), padding='same')(down3_pool)
     down4 = BatchNormalization()(down4)
     down4 = Activation('relu')(down4)
     down4 = Conv2D(256 * mult, (3, 3), padding='same')(down4)
     down4 = BatchNormalization()(down4)
     down4 = Activation('relu')(down4)
+
+    # receptive 10
     down4_pool = MaxPooling2D((2, 2), strides=(2, 2))(down4)
     # 8
 
+    # receptive 5
     center = Conv2D(512 * mult, (3, 3), padding='same')(down4_pool)
     center = BatchNormalization()(center)
     center = Activation('relu')(center)
@@ -1027,8 +1143,8 @@ def gcn(i, k, n, filters=1):
     right = Conv2D(filters, kernel_size=(k,1), padding='same', name=n + '_r1')(right)
     return add([left, right])
 
-def br(i, n, filters=1):
-    res = Conv2D(filters, kernel_size=(3,3), padding='same', activation='relu', name=n + '_c0')(i)
+def br(i, n, filters=1, activation='relu'):
+    res = Conv2D(filters, kernel_size=(3,3), padding='same', activation=activation, name=n + '_c0')(i)
     res = Conv2D(filters, kernel_size=(3,3), padding='same', name=n + '_c1')(res)
     res = Conv2D(i._keras_shape[-1], kernel_size=(1,1), padding='same', name=n + '_c2')(res)
     return add([res, i])
@@ -1096,7 +1212,7 @@ class Scale(Layer):
         base_config = super(Scale, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
 
-def identity_block(input_tensor, kernel_size, filters, stage, block, preffix=''):
+def identity_block(input_tensor, kernel_size, filters, stage, block, preffix='', activation='relu', zero_padding=False, scale=True):
     '''The identity_block is the block that has no conv layer at shortcut
     # Arguments
         input_tensor: input tensor
@@ -1111,26 +1227,29 @@ def identity_block(input_tensor, kernel_size, filters, stage, block, preffix='')
     bn_name_base = preffix + 'bn' + str(stage) + block + '_branch'
     scale_name_base = preffix + 'scale' + str(stage) + block + '_branch'
 
-    x = Conv2D(nb_filter1, (1, 1), name=conv_name_base + '2a', use_bias=False)(input_tensor)
+    padding = 'valid' if zero_padding else 'same'
+
+    x = Conv2D(nb_filter1, (1, 1), name=conv_name_base + '2a', use_bias=False, padding=padding)(input_tensor)
     x = BatchNormalization(epsilon=eps, axis=bn_axis, name=bn_name_base + '2a')(x)
-    x = Scale(axis=bn_axis, name=scale_name_base + '2a')(x)
-    x = Activation('relu', name=conv_name_base + '2a_relu')(x)
+    if scale: x = Scale(axis=bn_axis, name=scale_name_base + '2a')(x)
+    x = Activation(activation, name=conv_name_base + '2a_relu')(x)
 
-    x = ZeroPadding2D((1, 1), name=conv_name_base + '2b_zeropadding')(x)
-    x = Conv2D(nb_filter2, (kernel_size, kernel_size), name=conv_name_base + '2b', use_bias=False)(x)
+    if zero_padding:
+        x = ZeroPadding2D((1, 1), name=conv_name_base + '2b_zeropadding')(x)
+    x = Conv2D(nb_filter2, (kernel_size, kernel_size), name=conv_name_base + '2b', use_bias=False, padding=padding)(x)
     x = BatchNormalization(epsilon=eps, axis=bn_axis, name=bn_name_base + '2b')(x)
-    x = Scale(axis=bn_axis, name=scale_name_base + '2b')(x)
-    x = Activation('relu', name=conv_name_base + '2b_relu')(x)
+    if scale: x = Scale(axis=bn_axis, name=scale_name_base + '2b')(x)
+    x = Activation(activation, name=conv_name_base + '2b_relu')(x)
 
-    x = Conv2D(nb_filter3, (1, 1), name=conv_name_base + '2c', use_bias=False)(x)
+    x = Conv2D(nb_filter3, (1, 1), name=conv_name_base + '2c', use_bias=False, padding=padding)(x)
     x = BatchNormalization(epsilon=eps, axis=bn_axis, name=bn_name_base + '2c')(x)
-    x = Scale(axis=bn_axis, name=scale_name_base + '2c')(x)
+    if scale: x = Scale(axis=bn_axis, name=scale_name_base + '2c')(x)
 
     x = add([x, input_tensor], name=preffix + 'res' + str(stage) + block)
-    x = Activation('relu', name=preffix + 'res' + str(stage) + block + '_relu')(x)
+    x = Activation(activation, name=preffix + 'res' + str(stage) + block + '_relu')(x)
     return x
 
-def conv_block(input_tensor, kernel_size, filters, stage, block, strides=(2, 2), preffix=''):
+def conv_block(input_tensor, kernel_size, filters, stage, block, strides=(2, 2), preffix='', activation='relu', zero_padding=True, scale=True):
     '''conv_block is the block that has a conv layer at shortcut
     # Arguments
         input_tensor: input tensor
@@ -1147,29 +1266,30 @@ def conv_block(input_tensor, kernel_size, filters, stage, block, strides=(2, 2),
     bn_name_base = preffix + 'bn' + str(stage) + block + '_branch'
     scale_name_base = preffix + 'scale' + str(stage) + block + '_branch'
 
-    x = Conv2D(nb_filter1, (1, 1), strides=strides, name=conv_name_base + '2a', use_bias=False)(input_tensor)
+    padding = 'valid' if zero_padding else 'same'
+
+    x = Conv2D(nb_filter1, (1, 1), strides=strides, name=conv_name_base + '2a', use_bias=False, padding=padding)(input_tensor)
     x = BatchNormalization(epsilon=eps, axis=bn_axis, name=bn_name_base + '2a')(x)
-    x = Scale(axis=bn_axis, name=scale_name_base + '2a')(x)
-    x = Activation('relu', name=conv_name_base + '2a_relu')(x)
+    if scale: x = Scale(axis=bn_axis, name=scale_name_base + '2a')(x)
+    x = Activation(activation, name=conv_name_base + '2a_relu')(x)
 
-    x = ZeroPadding2D((1, 1), name=conv_name_base + '2b_zeropadding')(x)
-    x = Conv2D(nb_filter2, (kernel_size, kernel_size),
-                      name=conv_name_base + '2b', use_bias=False)(x)
+    if zero_padding:
+        x = ZeroPadding2D((1, 1), name=conv_name_base + '2b_zeropadding')(x)
+    x = Conv2D(nb_filter2, (kernel_size, kernel_size), name=conv_name_base + '2b', use_bias=False, padding=padding)(x)
     x = BatchNormalization(epsilon=eps, axis=bn_axis, name=bn_name_base + '2b')(x)
-    x = Scale(axis=bn_axis, name=scale_name_base + '2b')(x)
-    x = Activation('relu', name=conv_name_base + '2b_relu')(x)
+    if scale: x = Scale(axis=bn_axis, name=scale_name_base + '2b')(x)
+    x = Activation(activation, name=conv_name_base + '2b_relu')(x)
 
-    x = Conv2D(nb_filter3, (1, 1), name=conv_name_base + '2c', use_bias=False)(x)
+    x = Conv2D(nb_filter3, (1, 1), name=conv_name_base + '2c', use_bias=False, padding=padding)(x)
     x = BatchNormalization(epsilon=eps, axis=bn_axis, name=bn_name_base + '2c')(x)
-    x = Scale(axis=bn_axis, name=scale_name_base + '2c')(x)
+    if scale: x = Scale(axis=bn_axis, name=scale_name_base + '2c')(x)
 
-    shortcut = Conv2D(nb_filter3, (1, 1), strides=strides,
-                             name=conv_name_base + '1', use_bias=False)(input_tensor)
+    shortcut = Conv2D(nb_filter3, (1, 1), strides=strides, name=conv_name_base + '1', use_bias=False, padding=padding)(input_tensor)
     shortcut = BatchNormalization(epsilon=eps, axis=bn_axis, name=bn_name_base + '1')(shortcut)
-    shortcut = Scale(axis=bn_axis, name=scale_name_base + '1')(shortcut)
+    if scale: shortcut = Scale(axis=bn_axis, name=scale_name_base + '1')(shortcut)
 
     x = add([x, shortcut], name=preffix + 'res' + str(stage) + block)
-    x = Activation('relu', name=preffix + 'res' + str(stage) + block + '_relu')(x)
+    x = Activation(activation, name=preffix + 'res' + str(stage) + block + '_relu')(x)
     return x
 
 def get_largekernels(input_shape=(256, 256, 3), k=15):
@@ -1191,72 +1311,73 @@ def get_largekernels(input_shape=(256, 256, 3), k=15):
         bn_axis = 1
         img_input = Input(shape=input_shape, name='data')
 
-    #x = InstanceNormalization(axis=None, name='lkm_in0')(img_input)
-
     res1 = Scale(axis=bn_axis, name='lkm_scale_conv1')(img_input)
-    res1 = conv_block(res1, 3, [32, 32, 128], stage=1, block='a', strides=(1, 1), preffix='lkm_')
-    res1 = identity_block(res1, 3, [32, 32, 128], stage=1, block='b', preffix='lkm_')
-    res1 = identity_block(res1, 3, [32, 32, 128], stage=1, block='c', preffix='lkm_')
+    act = 'relu'
+    res1 = conv_block(res1, 3, [32, 32, 128], stage=1, block='a', strides=(1, 1), preffix='lkm_', activation=act)
+    res1 = identity_block(res1, 3, [32, 32, 128], stage=1, block='b', preffix='lkm_', activation=act)
+    res1 = identity_block(res1, 3, [32, 32, 128], stage=1, block='c', preffix='lkm_', activation=act)
             
     x = ZeroPadding2D((3, 3), name='conv1_zeropadding')(img_input)
     x = Conv2D(64, (7, 7), strides=(2, 2), name='conv1', use_bias=False)(x)
     x = BatchNormalization(epsilon=eps, axis=bn_axis, name='bn_conv1')(x)
     x = Scale(axis=bn_axis, name='scale_conv1')(x)
-    x = Activation('relu', name='conv1_relu')(x)
+    x = Activation(act, name='conv1_relu')(x)
     res2 = x
 
     x = MaxPooling2D((3, 3), strides=(2, 2), name='pool1', padding='same')(x)
-    x = conv_block(x, 3, [64, 64, 256], stage=2, block='a', strides=(1, 1))
-    x = identity_block(x, 3, [64, 64, 256], stage=2, block='b')
-    x = identity_block(x, 3, [64, 64, 256], stage=2, block='c')
+    x = conv_block(x, 3, [64, 64, 256], stage=2, block='a', strides=(1, 1), activation=act)
+    x = identity_block(x, 3, [64, 64, 256], stage=2, block='b', activation=act)
+    x = identity_block(x, 3, [64, 64, 256], stage=2, block='c', activation=act)
 
     res3 = x
 
-    x = conv_block(x, 3, [128, 128, 512], stage=3, block='a')
+    x = conv_block(x, 3, [128, 128, 512], stage=3, block='a', activation=act)
     for i in range(1,8):
-        x = identity_block(x, 3, [128, 128, 512], stage=3, block='b'+str(i))
+        x = identity_block(x, 3, [128, 128, 512], stage=3, block='b'+str(i), activation=act)
 
     res4 = x
 
-    x = conv_block(x, 3, [256, 256, 1024], stage=4, block='a')
+    x = conv_block(x, 3, [256, 256, 1024], stage=4, block='a', activation=act)
     for i in range(1,36):
-        x = identity_block(x, 3, [256, 256, 1024], stage=4, block='b'+str(i))
+        x = identity_block(x, 3, [256, 256, 1024], stage=4, block='b'+str(i), activation=act)
 
     res5 = x
 
-    x = conv_block(x, 3, [512, 512, 2048], stage=5, block='a')
-    x = identity_block(x, 3, [512, 512, 2048], stage=5, block='b')
-    x = identity_block(x, 3, [512, 512, 2048], stage=5, block='c')
+    x = conv_block(x, 3, [512, 512, 2048], stage=5, block='a', activation=act)
+    x = identity_block(x, 3, [512, 512, 2048], stage=5, block='b', activation=act)
+    x = identity_block(x, 3, [512, 512, 2048], stage=5, block='c', activation=act)
 
     res6 = x
 
     ff = 64
+    act = 'elu'
 
-    br6  = br(gcn(res6, k, n='lkm_gcn6', filters = ff//(2**0)), filters = ff//(2**1), n='lkm_br6') # 2048 -> 1024
-    br5  = br(gcn(res5, k, n='lkm_gcn5', filters = ff//(2**1)), filters = ff//(2**2), n='lkm_br5')
-    br4  = br(gcn(res4, k, n='lkm_gcn4', filters = ff//(2**2)), filters = ff//(2**3), n='lkm_br4')
-    br3  = br(gcn(res3, k, n='lkm_gcn3', filters = ff//(2**3)), filters = ff//(2**4), n='lkm_br3')
-    br2  = br(gcn(res2, k, n='lkm_gcn2', filters = ff//(2**4)), filters = ff//(2**5), n='lkm_br2')
-    br1  = br(gcn(res1, k, n='lkm_gcn1', filters = ff//(2**5)), filters = ff//(2**6), n='lkm_br1')
 
-    u6   = Conv2DTranspose( ff//(2**1), kernel_size=(2,2), strides=(2,2), name='lkm_u6')(br6)  #  32 x  32
-    br5a = br(add([u6,br5]), n='lkm_br5a', filters=ff//(2**1))
-    u5   = Conv2DTranspose( ff//(2**2), kernel_size=(2,2), strides=(2,2), name='lkm_u5')(br5a)  #  32 x  32
-    br4a = br(add([u5,br4]), n='lkm_br4a', filters=ff//(2**2))
-    u4  =  Conv2DTranspose( ff//(2**3), kernel_size=(2,2), strides=(2,2), name='lkm_u4')(br4a) #  64 x  64
-    br3a = br(add([u4,br3]), n='lkm_br3a', filters=ff//(2**3))
-    u3  =  Conv2DTranspose( ff//(2**4), kernel_size=(2,2), strides=(2,2), name='lkm_u3')(br3a) # 128 x 128
-    br2a = br(add([u3,br2]), n='lkm_br2a', filters=ff//(2**4))
-    u2  =  Conv2DTranspose( ff//(2**5), kernel_size=(2,2), strides=(2,2), name='lkm_u2')(br2a) # 256 x 256
-    br1a = br(add([u2,br1]), n='lkm_br1a', filters=ff//(2**5))
+    br6  = br(gcn(res6, k, n='lkm_gcn6_', filters = ff//(2**5)), filters = ff//(2**5), n='lkm_br6_', activation=act) # 2048 -> 1024
+    br5  = br(gcn(res5, k, n='lkm_gcn5_', filters = ff//(2**5)), filters = ff//(2**5), n='lkm_br5_', activation=act)
+    br4  = br(gcn(res4, k, n='lkm_gcn4_', filters = ff//(2**4)), filters = ff//(2**4), n='lkm_br4_', activation=act)
+    br3  = br(gcn(res3, k, n='lkm_gcn3_', filters = ff//(2**3)), filters = ff//(2**3), n='lkm_br3_', activation=act)
+    br2  = br(gcn(res2, k, n='lkm_gcn2_', filters = ff//(2**2)), filters = ff//(2**2), n='lkm_br2_', activation=act)
+    br1  = br(gcn(res1, k, n='lkm_gcn1_', filters = ff//(2**1)), filters = ff//(2**1), n='lkm_br1_', activation=act)
 
-    segmentation = Conv2D(1, (1, 1), activation='sigmoid', name='lkm_segmentation')(br1a)
+    u6   = Conv2DTranspose( ff//(2**5), kernel_size=(2,2), strides=(2,2), name='lkm_u6_')(br6)  #  32 x  32
+    br5a = br(add([u6,br5]), n='lkm_br5a_', filters=ff//(2**5), activation=act)
+    u5   = Conv2DTranspose( ff//(2**4), kernel_size=(2,2), strides=(2,2), name='lkm_u5_')(br5a)  #  32 x  32
+    br4a = br(add([u5,br4]), n='lkm_br4a_', filters=ff//(2**4), activation=act)
+    u4  =  Conv2DTranspose( ff//(2**3), kernel_size=(2,2), strides=(2,2), name='lkm_u4_')(br4a) #  64 x  64
+    br3a = br(add([u4,br3]), n='lkm_br3a_', filters=ff//(2**3), activation=act)
+    u3  =  Conv2DTranspose( ff//(2**2), kernel_size=(2,2), strides=(2,2), name='lkm_u3_')(br3a) # 128 x 128
+    br2a = br(add([u3,br2]), n='lkm_br2a_', filters=ff//(2**2), activation=act)
+    u2  =  Conv2DTranspose( ff//(2**1), kernel_size=(2,2), strides=(2,2), name='lkm_u2_')(br2a) # 256 x 256
+    br1a = br(add([u2,br1]), n='lkm_br1a_', filters=ff//(2**1), activation=act)
+
+    segmentation = Conv2D(1, (1, 1), activation='sigmoid', name='lkm_segmentation_')(br1a)
 
     model = Model(inputs=img_input, outputs=segmentation)
-    model.load_weights("resnet152_weights_tf.h5", by_name=True)
+    #model.load_weights("resnet152_weights_tf.h5", by_name=True)
 
     for layer in model.layers:
-        if layer.name.startswith("lkm"):
+        if layer.name.split("_")[0] in ['lkm', 'bn5a','bn5b', 'bn5c', 'res5a','res5b', 'res5c', 'scale5a','scale5b','scale5c'] :
             layer.trainable = True
         else:
             layer.trainable = False
