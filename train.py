@@ -299,8 +299,8 @@ if args.suffix is None and (args.use_background or args.use_coarse):
 		if not suffix.endswith("__"):
 			suffix = suffix + "__"
 		suffix += "coarse"
-
-suffix = "__" + args.suffix if args.suffix is not None else ""
+else:
+	suffix = "__" + args.suffix if args.suffix is not None else ""
 
 callbacks = [ReduceLROnPlateau(monitor='val_dice_loss100',
 								 factor=0.5,
