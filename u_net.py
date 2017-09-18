@@ -373,7 +373,12 @@ def get_unet_256(input_shape=(256, 256, 3), naive_upsampling= True ):
 def get_resunet(input_shape=(256, 256, 3), naive_upsampling= True, full_residual = False):
 
     inputs = Input(shape=input_shape)
-    bg_preffix = 'rgbX_' if input_shape[2] != 3 else 'rgb_'
+    bg_preffix_dict = { 
+        3 : 'rgb_',     # RGB 
+        4 : 'rgbCO_',   # RGB + coarse mask
+        5 : 'rgbX_',    # RGB + BG 
+        6 : 'rgbXCO_' } # RGB + BG + coarse mask
+    bg_preffix = bg_preffix_dict[input_shape[2]]
 
     global bn_axis
     if K.image_dim_ordering() == 'tf':
