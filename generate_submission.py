@@ -13,15 +13,16 @@ import random
 
 mod = int(sys.argv[1])
 # patch size
-N = 384
-input_size = 384
-batch_size = 16
+N = 512
+input_size = 512
+batch_size = 16*2
 threshold = 0.5
 #max_lines_count = 1000
 
 model = get_unet_1024((input_size, input_size, 3))
-model.load_weights(filepath='../PatchesNet-binaries/weights/patchesnet_unet1024_noaug_sym_pad_skipcon_384_train_99.6248_val-99.5609', by_name=True)
-f = open("../submit/remove_very_small_holes-11_PN_1024_384x384_epoch7.csv" + '.' + str(mod), "w")
+#model.load_weights(filepath='../PatchesNet-binaries/weights/patchesnet_unet1024_noaug_sym_pad_skipcon_384_train_99.6248_val-99.5609', by_name=True)
+model.load_weights(filepath='../PatchesNet-binaries/weights/patchesnet_unet1024_noaug_sym_pad_skipcon_512_continue_train-99.7048_val-99.6293', by_name=True)
+f = open("../submit/remove_very_small_holes-11_PN512_epoch3.csv" + '.' + str(mod), "w")
 
 
 def get_num_lines(file_path):
@@ -92,10 +93,10 @@ with open("../submit/remove_very_small_holes-11.csv") as csv:
 
         original_image = cv2.imread('/data/pavel/carv/test_hq/%s' % string.split(',')[0])
         img = original_image
-        img = np.pad(img, ((N // 2, N // 2), (N // 2, N // 2), (0, 0)), 'symmetric')
+        #img = np.pad(img, ((N // 2, N // 2), (N // 2, N // 2), (0, 0)), 'symmetric')
 
         original_mask = rle_decode(string.split(',')[1], (1280, 1918))
-        original_mask = np.pad(original_mask, ((N // 2, N // 2), (N // 2, N // 2)), 'symmetric')
+        #original_mask = np.pad(original_mask, ((N // 2, N // 2), (N // 2, N // 2)), 'symmetric')
 
         border = np.abs(np.gradient(original_mask)[1]) + np.abs(np.gradient(original_mask)[0])
         border = np.select([border == 0.5, border != 0.5], [1.0, border])
@@ -107,14 +108,40 @@ with open("../submit/remove_very_small_holes-11.csv") as csv:
 
         i = 0
         for x, y in zip(np.nonzero(border)[0], np.nonzero(border)[1]):
-            if i % 50 == 0 and x - N // 2 >= 0 and y - N // 2 >= 0 and x + N // 2 < img.shape[0] and y + N // 2 < img.shape[1]:
-                # cv2.rectangle(img,(y-N//2-1,x-N//2-1),(y+N//2,x+N//2),(255,255,0),1)
-                if N != input_size:
-                    patches_img.append(cv2.resize(img[x - N // 2:x + N // 2, y - N // 2:y + N // 2,:], (input_size, input_size), interpolation=cv2.INTER_CUBIC))
-                else:
-                    patches_img.append(img[x - N // 2:x + N // 2, y - N // 2:y + N // 2,:])
+            #if i % 50 == 0 and x - N // 2 >= 0 and y - N // 2 >= 0 and x + N // 2 < img.shape[0] and y + N // 2 < img.shape[1]:
+            if i % 50 == 0:
+
+                x1 = x - N // 2
+                x2 = x + N // 2
+                y1 = y - N // 2
+                y2 = y + N // 2
+                
+                if x1<0:
+                    x2 = N
+                    x1 = 0
                     
-                patches_loc.append([x - N // 2, x + N // 2, y - N // 2, y + N // 2])
+                if x2>img.shape[0]:
+                    x1 = img.shape[0] - N
+                    x2 = img.shape[0]
+
+                if y1<0:
+                    y2 = N
+                    y1 = 0
+                    
+                if y2>img.shape[1]:
+                    y1 = img.shape[1] - N
+                    y2 = img.shape[1]
+                
+                patches_img.append(img[x1:x2,y1:y2, :])
+                patches_loc.append([x1, x2, y1, y2])
+
+                # cv2.rectangle(img,(y-N//2-1,x-N//2-1),(y+N//2,x+N//2),(255,255,0),1)
+                #if N != input_size:
+                #    patches_img.append(cv2.resize(img[x - N // 2:x + N // 2, y - N // 2:y + N // 2,:], (input_size, input_size), interpolation=cv2.INTER_CUBIC))
+                #else:
+                #    patches_img.append(img[x - N // 2:x + N // 2, y - N // 2:y + N // 2,:])
+                    
+                #patches_loc.append([x - N // 2, x + N // 2, y - N // 2, y + N // 2])
             i = i + 1
         is_flipped = []
         def test_generator():
@@ -162,12 +189,12 @@ with open("../submit/remove_very_small_holes-11.csv") as csv:
         mask = mask/weights
 
         # unpad
-        mask = mask[N//2:-N//2, N//2:-N//2]
+        #mask = mask[N//2:-N//2, N//2:-N//2]
         mask = mask > threshold
         mask = np.select([mask == True, mask == False], [np.array(255, dtype=np.uint8), np.array(0, dtype=np.uint8)])
 
-        original_mask_patches = original_mask_patches[N//2:-N//2, N//2:-N//2]
-        original_mask_without_patches = original_mask_without_patches[N//2:-N//2, N//2:-N//2]
+        #original_mask_patches = original_mask_patches[N//2:-N//2, N//2:-N//2]
+        #original_mask_without_patches = original_mask_without_patches[N//2:-N//2, N//2:-N//2]
 
         # plt.figure(figsize=(25, 25))
         # plt.imshow(mask)

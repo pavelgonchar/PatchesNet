@@ -8,7 +8,7 @@ from tqdm import tqdm
 import errno
 
 # patch size
-N = 128
+N = 512
 ROOT_DIR = '/data/pavel/carv'
 
 
@@ -22,8 +22,8 @@ def mkdir_p(path):
         else:
             raise
 
-mkdir_p(ROOT_DIR + '/train_patches')
-mkdir_p(ROOT_DIR + '/train_patches_masks')
+mkdir_p(ROOT_DIR + '/train_patches_512_new')
+mkdir_p(ROOT_DIR + '/train_patches_masks_512_new')
 
 ids = [os.path.basename(x) for x in glob.glob(ROOT_DIR + '/train_hq/*.jpg')]
 ids = [x.split('.')[0] for x in ids]
@@ -45,9 +45,31 @@ for j in tqdm(range(len(ids))):
 
     i = 0
     for x, y in zip(np.nonzero(border)[0], np.nonzero(border)[1]):
-        if i % 50 == 0 and x - N // 2 >= 0 and y - N // 2 >= 0 and y - N // 2 < img.shape[0] and y + N // 2 < img.shape[1]:
-            misc.imsave(ROOT_DIR + '/train_patches/%s_%s.jpg' %
-                        (ids[j], i), img[x - N // 2:x + N // 2, y - N // 2:y + N // 2, :])
-            misc.imsave(ROOT_DIR + '/train_patches_masks/%s_%s.png' %
-                        (ids[j], i), mask[x - N // 2:x + N // 2, y - N // 2:y + N // 2] * 255)
+        if i % 50 == 0:
+
+            x1 = x - N // 2
+            x2 = x + N // 2
+            y1 = y - N // 2
+            y2 = y + N // 2
+
+            if x1 < 0:
+                x2 = N
+                x1 = 0
+
+            if x2 > img.shape[0]:
+                x1 = img.shape[0] - N
+                x2 = img.shape[0]
+
+            if y1 < 0:
+                y2 = N
+                y1 = 0
+
+            if y2 > img.shape[1]:
+                y1 = img.shape[1] - N
+                y2 = img.shape[1]
+
+            misc.imsave(ROOT_DIR + '/train_patches_512_new/%s_%s.jpg' %
+                        (ids[j], i), img[x1:x2, y1:y2, :])
+            misc.imsave(ROOT_DIR + '/train_patches_masks_512_new/%s_%s.png' %
+                        (ids[j], i), mask[x1:x2, y1:y2] * 255)
         i = i + 1
