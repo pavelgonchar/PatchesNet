@@ -208,12 +208,25 @@ def get_unet_128(input_shape=(128, 128, 3),
 def get_unet_256(input_shape=(256, 256, 3), naive_upsampling= True ):
 
     inputs = Input(shape=input_shape)
-    inputs_normalized = InstanceNormalization(axis=3)(inputs)
+    bg_preffix_dict = { 
+        3 : 'rgb_',     # RGB 
+        4 : 'rgbCO_',   # RGB + coarse mask
+        5 : 'rgbX_',    # RGB + BG 
+        6 : 'rgbXCO_' } # RGB + BG + coarse mask
+    bg_preffix = bg_preffix_dict[input_shape[2]]
+
+    global bn_axis
+    if K.image_dim_ordering() == 'tf':
+        bn_axis = 3
+    else:
+        bn_axis = 1
+
+    inputs_normalized = InstanceNormalization(axis=bn_axis, name=bg_preffix + 'instancenormalization1')(inputs)
 
     # 256
 
     # receptive 365
-    down0 = Conv2D(32, (3, 3), padding='same')(inputs_normalized)
+    down0 = Conv2D(32, (3, 3), padding='same', name=bg_preffix + "conv1")(inputs_normalized)
     down0 = BatchNormalization()(down0)
     down0 = Activation('relu')(down0)
     down0 = Conv2D(32, (3, 3), padding='same')(down0)
@@ -335,7 +348,7 @@ def get_unet_256(input_shape=(256, 256, 3), naive_upsampling= True ):
     up1 = Activation('relu')(up1)
     # 128
 
-    down0xtra = Conv2D(32, (3, 3), padding='same')(inputs_normalized)
+    down0xtra = Conv2D(32, (3, 3), padding='same', name=bg_preffix + "down0_xtra_conv1")(inputs_normalized)
     down0xtra = BatchNormalization()(down0xtra)
     down0xtra = Activation('relu')(down0xtra)
     down0xtra = Conv2D(32, (3, 3), padding='same')(down0xtra)
@@ -365,8 +378,6 @@ def get_unet_256(input_shape=(256, 256, 3), naive_upsampling= True ):
     classify = Conv2D(num_classes, (1, 1), activation='sigmoid')(up0)
 
     model = Model(inputs=inputs, outputs=classify)
-
-    # model = to_multi_gpu(model,n_gpus=8)
 
     return model
 

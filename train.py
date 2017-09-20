@@ -21,6 +21,8 @@ from multi_gpu import to_multi_gpu
 import csv
 from tps import tps
 import re
+from tqdm import tqdm
+
 
 ROOT_DIR = '/data/pavel/carv'
 WEIGHTS_DIR = '../PatchesNet-binaries/weights'
@@ -38,8 +40,9 @@ def mkdir_p(path):
 mkdir_p(WEIGHTS_DIR)
 
 parser = argparse.ArgumentParser()
+
+# train 
 parser.add_argument('--max-epoch', type=int, default=200, help='Epoch to run')
-parser.add_argument('-b', '--batch-size', type=int, default=16, help='Batch Size during training, e.g. -b 32')
 parser.add_argument('-l', '--learning-rate', type=float, default=1e-2, help='Initial learning rate, e.g. -l 1e-2')
 parser.add_argument('-lw', '--load-weights', type=str, help='load model weights (and continue training)')
 parser.add_argument('-lm', '--load-model', type=str, help='load model (and continue training)')
@@ -49,18 +52,30 @@ parser.add_argument('-i', '--input-size', type=int, default=256, help='Network i
 parser.add_argument('-ub', '--use-background', action='store_true', help='Use magic background as extra input to NN')
 parser.add_argument('-uc', '--use-coarse', action='store_true', help='Use coarse mask as extra input to NN')
 parser.add_argument('-o', '--optimizer', type=str, default='sgd', help='Optimizer to use: adam, nadam, sgd, e.g. -o adam')
-parser.add_argument('-g', '--gpus', type=int, default=1, help='Use GPUs, e.g -g 2')
 parser.add_argument('-at', '--augmentation-tps', action='store_true', help='TPS augmentation')
 parser.add_argument('-af', '--augmentation-flips', action='store_true', help='Flips augmentation')
 parser.add_argument('-s', '--suffix', type=str, default=None, help='Suffix for saving model name')
 parser.add_argument('-m', '--model', type=str, default='dilated_unet', help='Use model, e.g. -m dilated_unet -m unet_256, unet_bg_256, largekernels')
 parser.add_argument('-f', '--fractional-epoch', type=int, default=1, help='Reduce epoch steps by factor, e.g. -f 10 (after 10 epochs all samples would have been seen) ')
 
+# test / submission 
+parser.add_argument('-t', '--test', action='store_true', help='Test/Submit')
+parser.add_argument('-tb', '--test-background', type=str, default=join(ROOT_DIR, 'test_background_hq'), help='Magic backgrounds folder in PNG format for test, e.g. -tb /data/pavel/carv/test_backgroound_hq')
+parser.add_argument('-tc', '--test-coarse', type=str, help='Coarse mask folder in PNG format for test, e.g. -tc /data/pavel/carv/09967_test')
+parser.add_argument('-tf', '--test-folder', type=str, default=join(ROOT_DIR, 'test_hq'), help='Test folder e.g. -tc /data/pavel/carv/test_hq')
+parser.add_argument('-tppi', '--test-patches-per-image', type=int, default=128, help='Patches per image (rounded to multiple of batch size)')
+
+# common 
+parser.add_argument('-g', '--gpus', type=int, default=1, help='Use GPUs, e.g -g 2')
+parser.add_argument('-b', '--batch-size', type=int, default=16, help='Batch Size during training/test, e.g. -b 32')
+
 args = parser.parse_args()  
 
 def preprocess_input_imagenet(img):
 	return img.astype(np.float32) - np.float32([103.939, 116.779, 123.68])
 
+# WARNING -> this would fail for 'largekernels' if LOADING MODEL (b/c args.model would be undefined)
+# TODO: Fix if you plan to load models based on 'largekernels' architecture
 preprocess_for_model = preprocess_input_imagenet if args.model == 'largekernels' else lambda x: x / 255.
 
 if args.cpu:
@@ -74,34 +89,42 @@ BACKGROUNDS_FOLDER   = join(ROOT_DIR, 'train_background_hq')
 CSV_FILENAME         = join(ROOT_DIR, 'train_patches_' + str(PATCH_SIZE) + ".csv")
 COARSE_FOLDER        = join(ROOT_DIR, '09967')
 
-all_files = glob.glob(join(TRAIN_FOLDER_PATCHES, '*_*.jpg'))
-ids = list(set([(x.split('/')[-1]).split('_')[0] for x in all_files]))
-ids.sort()
-
-if args.use_background or args.use_coarse:
-	with open(CSV_FILENAME, 'rb') as csvfile:
-		reader = csv.reader(csvfile, delimiter=',', quotechar='|', quoting=csv.QUOTE_MINIMAL)
-		patches_dict = {rows[0]:(int(rows[1]),int(rows[2])) for rows in reader}
-		if args.use_background:
-			background_dict = { }
-			stats_dict      = { }
-		if args.use_coarse:
-			coarse_dict = { }
-
-
-ids_train_split, ids_valid_split = train_test_split(
-	ids, test_size=0.1, random_state=13)
-
-ids_train_split = [os.path.basename(x).split('.')[0]
-					 for x in all_files if os.path.basename(x).split('_')[0] in ids_train_split]
-ids_valid_split = [os.path.basename(x).split('.')[0]
-					 for x in all_files if os.path.basename(x).split('_')[0] in ids_valid_split]
-
 input_size = args.input_size
 batch_size = args.batch_size 
 
-print('Training on {} samples'.format(len(ids_train_split)))
-print('Validating on {} samples'.format(len(ids_valid_split)))
+if not args.test:
+	all_files = glob.glob(join(TRAIN_FOLDER_PATCHES, '*_*.jpg'))
+	ids = list(set([(x.split('/')[-1]).split('_')[0] for x in all_files]))
+	ids.sort()
+
+	if args.use_background or args.use_coarse:
+		with open(CSV_FILENAME, 'rb') as csvfile:
+			reader = csv.reader(csvfile, delimiter=',', quotechar='|', quoting=csv.QUOTE_MINIMAL)
+			patches_dict = {rows[0]:(int(rows[1]),int(rows[2])) for rows in reader}
+			if args.use_background:
+				background_dict = { }
+				stats_dict      = { }
+			if args.use_coarse:
+				coarse_dict = { }
+
+
+	ids_train_split, ids_valid_split = train_test_split(
+		ids, test_size=0.1, random_state=13)
+
+	ids_train_split = [os.path.basename(x).split('.')[0]
+						 for x in all_files if os.path.basename(x).split('_')[0] in ids_train_split]
+	ids_valid_split = [os.path.basename(x).split('.')[0]
+						 for x in all_files if os.path.basename(x).split('_')[0] in ids_valid_split]
+
+	print('Training on {} samples'.format(len(ids_train_split)))
+	print('Validating on {} samples'.format(len(ids_valid_split)))
+
+else:
+
+	all_files = glob.glob(join(args.test_folder, '*_*.jpg'))
+	ids = list(set([(x.split('/')[-1]).split('_')[0] for x in all_files]))
+	ids.sort()
+	print('Testing on {} samples'.format(len(ids)))
 
 def randomShiftScaleRotate(image, mask,
 							 shift_limit=(-0.0625, 0.0625),
@@ -148,7 +171,8 @@ def randomShiftScaleRotate(image, mask,
 def randomHorizontalFlip(image, mask, u=0.5):
 	if np.random.random() < u:
 		image = np.fliplr(image)
-		mask = np.fliplr(mask)
+		if mask is not None:
+			mask = np.fliplr(mask)
 
 	return image, mask
 
@@ -170,7 +194,7 @@ def generator(ids, training = True):
 					img = cv2.resize(img, (input_size, input_size), interpolation=cv2.INTER_CUBIC)
 				
 				mask = cv2.imread(join(TRAIN_FOLDER_MASKS, '{}.png'.format(id)), cv2.IMREAD_GRAYSCALE)
-				if (input_size,input_size) != mask.shape:
+				if (input_size, input_size) != mask.shape:
 					mask = cv2.resize(mask, (input_size, input_size), interpolation=cv2.INTER_LINEAR)
 
 				if args.use_background:
@@ -248,17 +272,162 @@ def generator(ids, training = True):
 			y_batch = np.array(y_batch, np.float32) / 255.
 			yield x_batch, y_batch
 
-initial_epoch = 0
-if not args.load_model:
-	model_name = args.model
-	input_channels = 3
-	if args.use_background:
-		input_channels += 2
-	if args.use_coarse:
-		input_channels += 1
+def get_weighted_window(patch_size):
+	squareX, squareY = np.meshgrid(
+		np.arange(1, patch_size // 2 + 1, 1),
+		np.arange(1, patch_size // 2 + 1, 1))
+	grid = (squareX + squareY) // 2
+	square = np.zeros((patch_size, patch_size), dtype=np.float32)
+	square[0:patch_size // 2, 0:patch_size // 2] = grid
+	square[patch_size // 2:, 0:patch_size // 2] = np.flip(grid, 0)
+	square[0:patch_size // 2, patch_size // 2:] = np.flip(grid, 1)
+	square[patch_size // 2:, patch_size // 2:] = patch_size // 2 + 1 - grid
+	w = np.sqrt(np.sqrt(square / (patch_size // 2)))
+	return w
 
-	model = getattr(u_net, 'get_'+ model_name)(input_shape=(input_size, input_size, input_channels))
-else:
+def rle_encode(pixels):
+	#pixels = pixels[:, :1918,:]
+	pixels = pixels.ravel()
+	np.rint(pixels, out=pixels)
+	
+	# We avoid issues with '1' at the start or end (at the corners of 
+	# the original image) by setting those pixels to '0' explicitly.
+	# We do not expect these to be non-zero for an accurate mask, 
+	# so this should not harm the score.
+	pixels[0]  = 0
+	pixels[-1] = 0
+	runs = np.where(pixels[1:] != pixels[:-1])[0] + 2
+	runs[1::2] = runs[1::2] - runs[:-1:2]
+	return runs
+
+def rle_to_string(runs):
+	return ' '.join(str(x) for x in runs)
+
+def test_model(model, ids, X, CO, patches_per_image, batch_size, csv_filename, save_pngs_to_folder):
+
+	random.seed(13)
+	x_batch = []
+	y_batch = []
+
+	weighted_window = get_weighted_window(PATCH_SIZE)
+
+	with open(csv_filename, 'wb') as csvfile:
+		writer = csv.writer(csvfile, delimiter=',', quotechar='|', quoting=csv.QUOTE_MINIMAL)
+		writer.writerow(['img', 'rle_mask'])
+
+		for car_id in tqdm(ids):
+			if X:
+				all_background = cv2.imread(join(args.test_background, '{}.png'.format(car_id)))
+				all_background_padded = np.pad(all_background, ((PATCH_SIZE // 2, PATCH_SIZE // 2), (PATCH_SIZE // 2, PATCH_SIZE // 2), (0, 0)), 'symmetric')
+
+			for idx in range(1,17):
+				car_view_file = '{}_{:02d}'.format(car_id, idx) 
+
+				img = cv2.imread(join(args.test_folder, car_view_file + '.jpg'))
+				img_padded = np.pad(img, ((PATCH_SIZE // 2, PATCH_SIZE // 2), (PATCH_SIZE // 2, PATCH_SIZE // 2), (0, 0)), 'symmetric')
+
+				all_coarse = cv2.imread(join(args.test_coarse, car_view_file + '.png'), cv2.IMREAD_GRAYSCALE)
+				all_coarse_padded = np.pad(all_coarse, ((PATCH_SIZE // 2, PATCH_SIZE // 2), (PATCH_SIZE // 2, PATCH_SIZE // 2)), 'symmetric')
+
+				border = np.abs(np.gradient(all_coarse)[1]) + np.abs(np.gradient(all_coarse)[0])
+				border = np.select([border == 0.5, border != 0.5], [1.0, border])
+
+				edges = np.nonzero(border)
+				seed = random.randint(0,1000)
+				edges_x, edges_y = edges[0], edges[1]
+				random.seed(seed)
+				random.shuffle(edges_x)
+				random.seed(seed)
+				random.shuffle(edges_y)
+				n_patches = batch_size * (patches_per_image // batch_size)
+				edges = edges_x[: n_patches], edges_y[: n_patches]
+
+				probabilities_padded = np.zeros_like(all_coarse_padded, dtype=np.float32)
+				weights_padded       = np.zeros_like(all_coarse_padded, dtype=np.float32)
+
+				i = 0
+				img_batch = np.empty((batch_size, input_size, input_size, 6), dtype=np.float32) # FIX 6
+				xy_batch   = []
+
+				for y,x in zip(edges[0], edges[1]):
+					x = x + PATCH_SIZE // 2 
+					y = y + PATCH_SIZE // 2
+
+					x_l, x_r = x - PATCH_SIZE // 2, x + PATCH_SIZE // 2 
+					y_l, y_r = y - PATCH_SIZE // 2, y + PATCH_SIZE // 2 
+
+					img = img_padded[y_l:y_r, x_l:x_r, :]
+
+					if X:
+						background = np.copy(all_background_padded[y_l:y_r, x_l:x_r,:])
+
+						no_background_color = (255,0,255)
+						background_index = np.all(background != no_background_color, axis=-1)
+						selected_background = background[background_index]
+						background_l2 = np.expand_dims(255 - np.linalg.norm(background - img, axis=2) / np.sqrt(3.), axis=2)
+						background_mask = np.zeros((PATCH_SIZE, PATCH_SIZE,1), dtype=np.uint8)
+						background_mask[background_index] = 255
+						selected_background_l2 = background_l2[background_index]
+	  
+						if selected_background.size > 0:
+							selected_background_mean = np.mean(selected_background_l2)
+							selected_background_std  = np.std(selected_background_l2)
+						else:
+							selected_background_mean = np.mean(img)
+							selected_background_std  = np.std(img)                    
+
+						background_l2[~background_index] = \
+							np.random.normal(loc=selected_background_mean, scale=selected_background_std, size=(PATCH_SIZE**2-(selected_background.size//3),1))
+
+						img = np.concatenate([img, background_l2, background_mask], axis=2)
+
+					if CO:
+						coarse = np.copy(all_coarse_padded[y_l:y_r, x_l:x_r])
+						img = np.concatenate([img, np.expand_dims(coarse, axis=2)], axis=2)
+
+					if (input_size, input_size) != img.shape[:2]:
+						img = cv2.resize(img, (input_size, input_size), interpolation=cv2.INTER_CUBIC)
+					
+					if img.shape[:2] != (PATCH_SIZE, PATCH_SIZE):
+						print(id)
+
+					img = preprocess_for_model(img.astype(np.float32))
+					flip = random.randint(0,1)
+					if flip:
+						img = np.fliplr(img)
+
+					img_batch[i,...] = img
+					xy_batch.append((x_l, x_r, y_l, y_r, flip))
+					i += 1
+					if i == batch_size:
+						patches_probs = model.predict_on_batch(img_batch)
+
+						for patch, (x_l, x_r, y_l, y_r, flip) in enumerate(xy_batch):
+
+							patch_probs = np.squeeze(patches_probs[patch], axis=2)
+							if flip:
+								patch_probs = np.fliplr(patch_probs)	
+							probabilities_padded[y_l:y_r, x_l:x_r] += np.multiply(patch_probs, weighted_window)
+							weights_padded[y_l:y_r, x_l:x_r]       += weighted_window
+
+						xy_batch   = []
+						i = 0
+
+				zero_weights = (weights_padded == 0)
+				weights_padded[zero_weights] = 1.
+				probabilities_padded /= weights_padded
+				probabilities_padded[zero_weights] = all_coarse_padded[zero_weights] / 255.
+
+				probabilities = probabilities_padded[PATCH_SIZE//2:-PATCH_SIZE//2, PATCH_SIZE//2:-PATCH_SIZE//2]
+
+				cv2.imwrite(join(save_pngs_to_folder, car_view_file + ".png"), probabilities*255.)
+
+				rle = rle_encode(probabilities)
+                writer.writerow([car_view_file + ".jpg", rle_to_string(rle)])
+
+initial_epoch = 0
+
+if args.load_model:
 	print("Loading model " + args.load_model)
 
 	# monkey-patch loss so model loads ok
@@ -274,66 +443,95 @@ else:
 	model_name = match.group(1).split("__")[0]
 	initial_epoch = int(match.group(2)) + 1
 
+	input_dimensions = model.get_input_shape_at(0)[1:]
+	print(input_dimensions)
+	assert input_dimensions[:2] == (args.input_size, args.input_size)
+
+	name_dict = { 
+		'rgb'    : (False, False),
+		'rgbCO'  : (False, True),
+		'rgbX'   : (True,  False), 
+		'rgbXCO' : (True,  True) }
+
+	X, CO = name_dict[model.layers[1].name.split("_")[0]]
+
+	print(X,CO)
+
+	if not args.test:
+		assert args.use_background == X
+		assert args.use_coarse == CO
+
+else:
+	model_name = args.model
+	input_channels = 3
+	if args.use_background:
+		input_channels += 2
+	if args.use_coarse:
+		input_channels += 1
+
+	model = getattr(u_net, 'get_'+ model_name)(input_shape=(input_size, input_size, input_channels))
+
 if args.load_weights:
 	model.load_weights(args.load_weights, by_name=True)
 
 model.summary()
-#model.get_layer('instance_normalization_1').name='instance_normalization_1_bg_axisNone'
-#model.get_layer('conv2d_1').name='conv2d_1_bg'
-#model.get_layer('conv2d_25').name='conv2d_25_bg'
 
-
-
-#model.get_layer('conv2d_28').name='conv2d_28_deconv'
-#model.get_layer('conv2d_22').name='conv2d_22_deconv'
-#model.get_layer('conv2d_16').name='conv2d_16_deconv'
-#model.get_layer('conv2d_13').name='conv2d_13_deconv'
-#model.load_weights(filepath=join(WEIGHTS_DIR, 'patchesnet-unet_background_256-epoch00-val_dice0.994335'), by_name=True)
-#model.load_weights(filepath=join(WEIGHTS_DIR, 'patchesnet-unet_256-epoch00-val_dice0.992748'), by_name=True)
-
-if args.suffix is None and (args.use_background or args.use_coarse):
-	suffix = "__"
+if args.suffix is None:
+	suffix = "__rgb"
 	if args.use_background:
-		suffix += "bg"
+		suffix += "X"
 	if args.use_coarse:
-		if not suffix.endswith("__"):
-			suffix = suffix + "__"
-		suffix += "coarse"
+		suffix += "CO"
 else:
-	suffix = "__" + args.suffix if args.suffix is not None else ""
+	suffix = "__" + args.suffix
 
-callbacks = [ReduceLROnPlateau(monitor='val_dice_loss100',
-								 factor=0.5,
-								 patience=4,
-								 verbose=1,
-								 epsilon=1e-4,
-								 mode='max'),
-			 ModelCheckpoint(monitor='val_dice_loss100',
-							 filepath=join(WEIGHTS_DIR,"patchesnet-"+ model_name + suffix + "-epoch{epoch:02d}-val_dice{val_dice_loss:.6f}"),
-							 save_best_only=True,
-							 save_weights_only=False,
-							 mode='max')]
 
 if args.gpus != 1:
 	model = to_multi_gpu(model,n_gpus=args.gpus)
 
-if args.optimizer == 'adam':
-	optimizer=Adam(lr=args.learning_rate)
-elif args.optimizer == 'nadam':
-	optimizer=Nadam(lr=args.learning_rate)
-elif args.optimizer == 'rmsprop':
-	optimizer=RMSprop(lr=args.learning_rate)
-elif args.optimizer == 'sgd':
-	optimizer=SGD(lr=args.learning_rate, momentum=0.9)
+if args.test:
+	model_basename = args.load_model.split('/')[-1]
+	mkdir_p('test_' + model_basename)
+	test_model(model, ids, X, CO, 
+		patches_per_image = args.test_patches_per_image, 
+		batch_size = args.batch_size,
+		csv_filename = model_basename + '.csv',
+		save_pngs_to_folder = 'test_' + model_basename)
+
 else:
-	assert False
-model.compile(optimizer=optimizer, loss=bce_dice_loss, metrics=[dice_loss, dice_loss100])
-model.fit_generator(generator=generator(ids = ids_train_split, training=True),
-					steps_per_epoch=np.ceil(
-						float(len(ids_train_split)) / float(batch_size)) // args.fractional_epoch,
-					epochs=args.max_epoch,
-					initial_epoch = initial_epoch,
-					verbose=1,
-					callbacks=callbacks,
-					validation_data=generator(ids = ids_valid_split, training=False),
-					validation_steps=np.ceil(float(len(ids_valid_split)) / float(batch_size)))
+
+	callbacks = [ReduceLROnPlateau(monitor='val_dice_loss100',
+									 factor=0.5,
+									 patience=4,
+									 verbose=1,
+									 epsilon=1e-4,
+									 mode='max'),
+				 ModelCheckpoint(monitor='val_dice_loss100',
+								 filepath=join(WEIGHTS_DIR,"patchesnet-"+ model_name + suffix + "-epoch{epoch:02d}-val_dice{val_dice_loss:.6f}"),
+								 save_best_only=True,
+								 save_weights_only=False,
+								 mode='max')]
+
+
+
+	if args.optimizer == 'adam':
+		optimizer=Adam(lr=args.learning_rate)
+	elif args.optimizer == 'nadam':
+		optimizer=Nadam(lr=args.learning_rate)
+	elif args.optimizer == 'rmsprop':
+		optimizer=RMSprop(lr=args.learning_rate)
+	elif args.optimizer == 'sgd':
+		optimizer=SGD(lr=args.learning_rate, momentum=0.9)
+	else:
+		assert False
+
+	model.compile(optimizer=optimizer, loss=bce_dice_loss, metrics=[dice_loss, dice_loss100])
+	model.fit_generator(generator=generator(ids = ids_train_split, training=True),
+						steps_per_epoch=np.ceil(
+							float(len(ids_train_split)) / float(batch_size)) // args.fractional_epoch,
+						epochs=args.max_epoch,
+						initial_epoch = initial_epoch,
+						verbose=1,
+						callbacks=callbacks,
+						validation_data=generator(ids = ids_valid_split, training=False),
+						validation_steps=np.ceil(float(len(ids_valid_split)) / float(batch_size)))

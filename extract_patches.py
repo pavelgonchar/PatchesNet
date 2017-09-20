@@ -10,7 +10,7 @@ from os.path import join
 import csv
 
 # patch size
-N = 256
+N = 384
 ROOT_DIR = '/data/pavel/carv'
 
 def mkdir_p(path):
