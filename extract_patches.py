@@ -8,6 +8,7 @@ from tqdm import tqdm
 import errno
 from os.path import join
 import csv
+import random
 
 # patch size
 N = 384
@@ -63,3 +64,15 @@ with open(CSVFILENAME, 'wb') as csvfile:
                     mask[x - N // 2:x + N // 2, y - N // 2:y + N // 2] * 255)
                 writer.writerow([patch_filename, y, x])
             i = i + 1
+
+        # write a random patch (maybe not touching edge to train patchesnet on false positives outside/inside car)
+        x = random.randint(N//2, img.shape[0] - N//2)
+        y = random.randint(N//2, img.shape[1] - N//2)
+
+        patch_filename = '%s_%s.jpg' % (ids[j], i)
+        misc.imsave(join(TRAIN_FOLDER_PATCHES, patch_filename), 
+            img[x - N // 2:x + N // 2, y - N // 2:y + N // 2, :])
+        misc.imsave(join(TRAIN_FOLDER_MASKS, patch_filename), 
+            mask[x - N // 2:x + N // 2, y - N // 2:y + N // 2] * 255)
+        writer.writerow([patch_filename, y, x])
+
