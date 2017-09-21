@@ -57,22 +57,22 @@ with open(CSVFILENAME, 'wb') as csvfile:
         i = 0
         for x, y in zip(np.nonzero(border)[0], np.nonzero(border)[1]):
             if i % 50 == 0 and x - N // 2 >= 0 and y - N // 2 >= 0 and x + N // 2 < img.shape[0] and y + N // 2 < img.shape[1]:
-                patch_filename = '%s_%s.jpg' % (ids[j], i)
-                misc.imsave(join(TRAIN_FOLDER_PATCHES, patch_filename), 
+                patch_filename = '%s_%s' % (ids[j], i)
+                misc.imsave(join(TRAIN_FOLDER_PATCHES, patch_filename + '.jpg'), 
                     img[x - N // 2:x + N // 2, y - N // 2:y + N // 2, :])
-                misc.imsave(join(TRAIN_FOLDER_MASKS, patch_filename), 
+                misc.imsave(join(TRAIN_FOLDER_MASKS, patch_filename + '.png'), 
                     mask[x - N // 2:x + N // 2, y - N // 2:y + N // 2] * 255)
-                writer.writerow([patch_filename, y, x])
+                writer.writerow([patch_filename + '.jpg', y, x])
             i = i + 1
 
         # write a random patch (maybe not touching edge to train patchesnet on false positives outside/inside car)
         x = random.randint(N//2, img.shape[0] - N//2)
         y = random.randint(N//2, img.shape[1] - N//2)
 
-        patch_filename = '%s_%s.jpg' % (ids[j], i)
-        misc.imsave(join(TRAIN_FOLDER_PATCHES, patch_filename), 
+        patch_filename = '%s_%s' % (ids[j], i)
+        misc.imsave(join(TRAIN_FOLDER_PATCHES, patch_filename + '.jpg'), 
             img[x - N // 2:x + N // 2, y - N // 2:y + N // 2, :])
-        misc.imsave(join(TRAIN_FOLDER_MASKS, patch_filename), 
+        misc.imsave(join(TRAIN_FOLDER_MASKS, patch_filename + '.png'), 
             mask[x - N // 2:x + N // 2, y - N // 2:y + N // 2] * 255)
-        writer.writerow([patch_filename, y, x])
+        writer.writerow([patch_filename + '.jpg', y, x])
 
