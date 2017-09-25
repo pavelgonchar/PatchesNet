@@ -47,8 +47,8 @@ parser.add_argument('-l', '--learning-rate', type=float, default=1e-2, help='Ini
 parser.add_argument('-lw', '--load-weights', type=str, help='load model weights (and continue training)')
 parser.add_argument('-lm', '--load-model', type=str, help='load model (and continue training)')
 parser.add_argument('-c', '--cpu', action='store_true', help='force CPU usage')
-parser.add_argument('-p', '--patch-size', type=int, default=256, help='Patch size, e.g -p 128')
-parser.add_argument('-i', '--input-size', type=int, default=256, help='Network input size, e.g -i 256')
+parser.add_argument('-p', '--patch-size', type=int, default=384, help='Patch size, e.g -p 128')
+parser.add_argument('-i', '--input-size', type=int, default=384, help='Network input size, e.g -i 256')
 parser.add_argument('-ub', '--use-background', action='store_true', help='Use magic background as extra input to NN')
 parser.add_argument('-uc', '--use-coarse', action='store_true', help='Use coarse mask as extra input to NN')
 parser.add_argument('-o', '--optimizer', type=str, default='sgd', help='Optimizer to use: adam, nadam, sgd, e.g. -o adam')
@@ -60,7 +60,7 @@ parser.add_argument('-f', '--fractional-epoch', type=int, default=1, help='Reduc
 
 # test / submission 
 parser.add_argument('-t', '--test', action='store_true', help='Test/Submit')
-parser.add_argument('-tb', '--test-background', type=str, default=join(ROOT_DIR, 'test_background_hq'), help='Magic backgrounds folder in PNG format for test, e.g. -tb /data/pavel/carv/test_backgroound_hq')
+parser.add_argument('-tb', '--test-background', type=str, default=join(ROOT_DIR, 'test_background_hq_09970'), help='Magic backgrounds folder in PNG format for test, e.g. -tb /data/pavel/carv/test_backgroound_hq')
 parser.add_argument('-tc', '--test-coarse', type=str, help='Coarse mask folder in PNG format for test, e.g. -tc /data/pavel/carv/09967_test')
 parser.add_argument('-tf', '--test-folder', type=str, default=join(ROOT_DIR, 'test_hq'), help='Test folder e.g. -tc /data/pavel/carv/test_hq')
 parser.add_argument('-tppi', '--test-patches-per-image', type=int, default=128, help='Patches per image (rounded to multiple of batch size)')
@@ -85,9 +85,9 @@ if args.cpu:
 PATCH_SIZE = args.patch_size
 TRAIN_FOLDER_PATCHES = join(ROOT_DIR, 'train_patches_' + str(PATCH_SIZE))
 TRAIN_FOLDER_MASKS   = join(ROOT_DIR, 'train_patches_masks_' + str(PATCH_SIZE))
-BACKGROUNDS_FOLDER   = join(ROOT_DIR, 'train_background_hq')
+BACKGROUNDS_FOLDER   = join(ROOT_DIR, 'train_background_hq_09970')
 CSV_FILENAME         = join(ROOT_DIR, 'train_patches_' + str(PATCH_SIZE) + ".csv")
-COARSE_FOLDER        = join(ROOT_DIR, '09967')
+COARSE_FOLDER        = join(ROOT_DIR, '09970')
 
 input_size = args.input_size
 batch_size = args.batch_size 
@@ -115,6 +115,8 @@ if not args.test:
                          for x in all_files if os.path.basename(x).split('_')[0] in ids_train_split]
     ids_valid_split = [os.path.basename(x).split('.')[0]
                          for x in all_files if os.path.basename(x).split('_')[0] in ids_valid_split]
+
+    ids_train_split += ids_valid_split
 
     print('Training on {} samples'.format(len(ids_train_split)))
     print('Validating on {} samples'.format(len(ids_valid_split)))
@@ -329,12 +331,10 @@ def test_model(model, ids, X, CO, patches_per_image, batch_size, csv_filename, s
                 all_coarse = cv2.imread(join(args.test_coarse, car_view_file + '.png'), cv2.IMREAD_GRAYSCALE)
                 all_coarse_padded = np.pad(all_coarse, ((PATCH_SIZE // 2, PATCH_SIZE // 2), (PATCH_SIZE // 2, PATCH_SIZE // 2)), 'symmetric')
 
-                # PAVEL -> I think probably here false positives are detected outside the actual contour...
-                # or maybe Im not traversing it the right way. 
-                # I suggest plotting the selected patches.
-                # This one test_patchesnet-resunet__bg__coarse-epoch34-val_dice0.995972/0004d4463b50_08.png is 
-                # on the first car so it will be easy to debug
-                border = np.abs(np.gradient(all_coarse)[1]) + np.abs(np.gradient(all_coarse)[0])
+                all_coarse_mask = all_coarse > 0.5
+                all_coarse_mask = np.select([all_coarse_mask == True, all_coarse_mask == False], [np.array(255, dtype=np.uint8), np.array(0, dtype=np.uint8)])
+
+                border = np.abs(np.gradient(all_coarse_mask)[1]) + np.abs(np.gradient(all_coarse_mask)[0])                
                 border = np.select([border == 0.5, border != 0.5], [1.0, border])
 
                 edges = np.nonzero(border)
@@ -460,8 +460,6 @@ if args.load_model:
 
     X, CO, input_channels = name_dict[model.layers[1].name.split("_")[0]]
 
-    print(X,CO)
-
     if not args.test:
         assert args.use_background == X
         assert args.use_coarse == CO
@@ -514,7 +512,7 @@ else:
                                      mode='max'),
                  ModelCheckpoint(monitor='val_dice_loss100',
                                  filepath=join(WEIGHTS_DIR,"patchesnet-"+ model_name + suffix + "-epoch{epoch:02d}-val_dice{val_dice_loss:.6f}"),
-                                 save_best_only=True,
+                                 save_best_only=False,
                                  save_weights_only=False,
                                  mode='max')]
 
