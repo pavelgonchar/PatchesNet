@@ -336,10 +336,16 @@ def test_model(model, ids, X, CO, patches_per_image, batch_size, csv_filename, s
     
             all_coarse_padded_batch[idx-1, ...] = np.pad(all_coarse, ((PATCH_SIZE // 2, PATCH_SIZE // 2), (PATCH_SIZE // 2, PATCH_SIZE // 2)), 'symmetric')
     
-            border = np.abs(np.gradient(all_coarse)[1]) + np.abs(np.gradient(all_coarse)[0])                
+            if args.threshold_coarse:
+                all_coarse_mask = all_coarse
+            else:
+                all_coarse_mask = 255 * np.rint(all_coarse/255.).astype(np.uint8)
+
+            border = np.abs(np.gradient(all_coarse_mask)[1]) + np.abs(np.gradient(all_coarse_mask)[0])                
             border = np.select([border == 0.5, border != 0.5], [1.0, border])
 
             edges = np.nonzero(border)
+            #print(len(edges[0]))
             seed = random.randint(0,1000)
             edges_x, edges_y = edges[0], edges[1]
             random.seed(seed)
