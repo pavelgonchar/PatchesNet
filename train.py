@@ -67,6 +67,7 @@ parser.add_argument('-tf', '--test-folder', type=str, default=join(ROOT_DIR, 'te
 parser.add_argument('-tppi', '--test-patches-per-image', type=int, default=128, help='Patches per image (rounded to multiple of batch size)')
 parser.add_argument('-tts', '--test-total-splits',  type=int, default=1, help='Only do the Xth car, e.g. -tts 12 (needs to work with -tcs)')
 parser.add_argument('-tcs', '--test-current-split', type=int, default=0, help='Only do the Nth car out of Xth, e.g. -tts 12 -tcs 2')
+parser.add_argument('-tsps', '--test-smart-patch-selection', action='store_true', help='Use a smarter way of selecting patches')
 
 # common 
 parser.add_argument('-g', '--gpus', type=int, default=1, help='Use GPUs, e.g -g 2')
@@ -345,14 +346,30 @@ def test_model(model, ids, X, CO, patches_per_image, batch_size, csv_filename, s
             border = np.select([border == 0.5, border != 0.5], [1.0, border])
 
             edges = np.nonzero(border)
-            #print(len(edges[0]))
+
             seed = random.randint(0,1000)
             edges_x, edges_y = edges[0], edges[1]
-            random.seed(seed)
-            random.shuffle(edges_x)
-            random.seed(seed)
-            random.shuffle(edges_y)
             n_patches = batch_size * (patches_per_image // batch_size)
+
+            if args.test_smart_patch_selection:
+                edge_probs = []
+                for y,x in zip(edges[0], edges[1]):
+                    B = PATCH_SIZE // 32
+                    x += PATCH_SIZE // 2 
+                    y += PATCH_SIZE // 2 
+                    edge_prob = 1. / (all_coarse_padded[idx-1, y-B//2:y+B//2,x-B//2:x+B//2].mean() + 1.)
+                    edge_probs.append(edge_probs)
+
+                random.seed(seed)
+                edges_x = np.random.choice(edges_x, size = n_patches, replace=None, p=edge_probs)
+                random.seed(seed)
+                edges_y = np.random.choice(edges_y, size = n_patches, replace=None, p=edge_probs)
+            else:
+                random.seed(seed)
+                random.shuffle(edges_x)
+                random.seed(seed)
+                random.shuffle(edges_y)
+
             edges = edges_x[: n_patches], edges_y[: n_patches]
 
             i = 0
