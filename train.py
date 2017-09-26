@@ -60,7 +60,7 @@ parser.add_argument('-f', '--fractional-epoch', type=int, default=1, help='Reduc
 
 # test / submission 
 parser.add_argument('-t', '--test', action='store_true', help='Test/Submit')
-parser.add_argument('-tb', '--test-background', type=str, default=join(ROOT_DIR, 'test_background_hq_09970'), help='Magic backgrounds folder in PNG format for test, e.g. -tb /data/pavel/carv/test_backgroound_hq')
+parser.add_argument('-tb', '--test-background', type=str, default=join(ROOT_DIR, 'test_background_hq_09970_pavel'), help='Magic backgrounds folder in PNG format for test, e.g. -tb /data/pavel/carv/test_backgroound_hq')
 parser.add_argument('-tc', '--test-coarse', type=str, help='Coarse mask folder in PNG format for test, e.g. -tc /data/pavel/carv/09967_test')
 parser.add_argument('-tf', '--test-folder', type=str, default=join(ROOT_DIR, 'test_hq'), help='Test folder e.g. -tc /data/pavel/carv/test_hq')
 parser.add_argument('-tppi', '--test-patches-per-image', type=int, default=128, help='Patches per image (rounded to multiple of batch size)')
@@ -68,6 +68,7 @@ parser.add_argument('-tppi', '--test-patches-per-image', type=int, default=128, 
 # common 
 parser.add_argument('-g', '--gpus', type=int, default=1, help='Use GPUs, e.g -g 2')
 parser.add_argument('-b', '--batch-size', type=int, default=16, help='Batch Size during training/test, e.g. -b 32')
+parser.add_argument('-tcm', '--threshold-coarse', action='store_true', help='Threshold coarse mask (for training or eval)')
 
 args = parser.parse_args()  
 
@@ -106,7 +107,6 @@ if not args.test:
                 stats_dict      = { }
             if args.use_coarse:
                 coarse_dict = { }
-
 
     ids_train_split, ids_valid_split = train_test_split(
         ids, test_size=0.1, random_state=13)
@@ -246,8 +246,13 @@ def generator(ids, training = True):
                         all_coarse = coarse_dict[car_view_file]
                     else:
                         all_coarse = cv2.imread(join(COARSE_FOLDER, car_view_file), cv2.IMREAD_GRAYSCALE)
+
+                        if args.threshold_coarse:
+                            all_coarse = 255 * np.rint(all_coarse/255.).astype(np.uint8)
+
                         all_coarse = np.pad(all_coarse, ((PATCH_SIZE // 2, PATCH_SIZE // 2), (PATCH_SIZE // 2, PATCH_SIZE // 2)), 'symmetric')
-                        #coarse_dict[car_view_file] = all_coarse
+
+                                              #coarse_dict[car_view_file] = all_coarse
                     patch_id = '{}.jpg'.format(id)
                     x,y = patches_dict[patch_id]
                     coarse = np.copy(all_coarse[y-PATCH_SIZE//2:y+PATCH_SIZE//2,x-PATCH_SIZE//2:x+PATCH_SIZE//2])
@@ -329,11 +334,11 @@ def test_model(model, ids, X, CO, patches_per_image, batch_size, csv_filename, s
                 img_padded = np.pad(img, ((PATCH_SIZE // 2, PATCH_SIZE // 2), (PATCH_SIZE // 2, PATCH_SIZE // 2), (0, 0)), 'symmetric')
 
                 all_coarse = cv2.imread(join(args.test_coarse, car_view_file + '.png'), cv2.IMREAD_GRAYSCALE)
+                if args.threshold_coarse:
+                    all_coarse = 255 * np.rint(all_coarse/255.).astype(np.uint8)
+        
                 all_coarse_padded = np.pad(all_coarse, ((PATCH_SIZE // 2, PATCH_SIZE // 2), (PATCH_SIZE // 2, PATCH_SIZE // 2)), 'symmetric')
-
-                all_coarse_mask = all_coarse > 0.5
-                all_coarse_mask = np.select([all_coarse_mask == True, all_coarse_mask == False], [np.array(255, dtype=np.uint8), np.array(0, dtype=np.uint8)])
-
+        
                 border = np.abs(np.gradient(all_coarse_mask)[1]) + np.abs(np.gradient(all_coarse_mask)[0])                
                 border = np.select([border == 0.5, border != 0.5], [1.0, border])
 
