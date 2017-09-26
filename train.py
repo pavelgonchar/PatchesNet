@@ -22,6 +22,7 @@ import csv
 from tps import tps
 import re
 from tqdm import tqdm
+import copy
 
 
 ROOT_DIR = '/data/pavel/carv'
@@ -64,6 +65,8 @@ parser.add_argument('-tb', '--test-background', type=str, default=join(ROOT_DIR,
 parser.add_argument('-tc', '--test-coarse', type=str, help='Coarse mask folder in PNG format for test, e.g. -tc /data/pavel/carv/09967_test')
 parser.add_argument('-tf', '--test-folder', type=str, default=join(ROOT_DIR, 'test_hq'), help='Test folder e.g. -tc /data/pavel/carv/test_hq')
 parser.add_argument('-tppi', '--test-patches-per-image', type=int, default=128, help='Patches per image (rounded to multiple of batch size)')
+parser.add_argument('-tts', '--test-total-splits',  type=int, default=1, help='Only do the Xth car, e.g. -tts 12 (needs to work with -tcs)')
+parser.add_argument('-tcs', '--test-current-split', type=int, default=0, help='Only do the Nth car out of Xth, e.g. -tts 12 -tcs 2')
 
 # common 
 parser.add_argument('-g', '--gpus', type=int, default=1, help='Use GPUs, e.g -g 2')
@@ -313,120 +316,160 @@ def rle_to_string(runs):
 def test_model(model, ids, X, CO, patches_per_image, batch_size, csv_filename, save_pngs_to_folder, input_channels):
 
     random.seed(13)
-    x_batch = []
-    y_batch = []
+
+    def patches_generator(car_id, all_coarse_padded_batch, car_xy_flip_batch):
+        
+        patch_id = 0
+        if X:
+            all_background = cv2.imread(join(args.test_background, '{}.png'.format(car_id)))
+            all_background_padded = np.pad(all_background, ((PATCH_SIZE // 2, PATCH_SIZE // 2), (PATCH_SIZE // 2, PATCH_SIZE // 2), (0, 0)), 'symmetric')
+
+        for idx in range(1,17):
+            car_view_file = '{}_{:02d}'.format(car_id, idx) 
+
+            img = cv2.imread(join(args.test_folder, car_view_file + '.jpg'))
+            img_padded = np.pad(img, ((PATCH_SIZE // 2, PATCH_SIZE // 2), (PATCH_SIZE // 2, PATCH_SIZE // 2), (0, 0)), 'symmetric')
+
+            all_coarse = cv2.imread(join(args.test_coarse, car_view_file + '.png'), cv2.IMREAD_GRAYSCALE)
+            if args.threshold_coarse:
+                all_coarse = 255 * np.rint(all_coarse/255.).astype(np.uint8)
+    
+            all_coarse_padded_batch[idx-1, ...] = np.pad(all_coarse, ((PATCH_SIZE // 2, PATCH_SIZE // 2), (PATCH_SIZE // 2, PATCH_SIZE // 2)), 'symmetric')
+    
+            border = np.abs(np.gradient(all_coarse)[1]) + np.abs(np.gradient(all_coarse)[0])                
+            border = np.select([border == 0.5, border != 0.5], [1.0, border])
+
+            edges = np.nonzero(border)
+            seed = random.randint(0,1000)
+            edges_x, edges_y = edges[0], edges[1]
+            random.seed(seed)
+            random.shuffle(edges_x)
+            random.seed(seed)
+            random.shuffle(edges_y)
+            n_patches = batch_size * (patches_per_image // batch_size)
+            edges = edges_x[: n_patches], edges_y[: n_patches]
+
+            i = 0
+            img_batch = np.empty((batch_size, input_size, input_size, input_channels), dtype=np.float32)
+
+            xy_batch = []
+
+            for y,x in zip(edges[0], edges[1]):
+                x = x + PATCH_SIZE // 2 
+                y = y + PATCH_SIZE // 2
+
+                x_l, x_r = x - PATCH_SIZE // 2, x + PATCH_SIZE // 2 
+                y_l, y_r = y - PATCH_SIZE // 2, y + PATCH_SIZE // 2 
+
+                img = img_padded[y_l:y_r, x_l:x_r, :]
+
+                if X:
+                    background = np.copy(all_background_padded[y_l:y_r, x_l:x_r,:])
+
+                    no_background_color = (255,0,255)
+                    background_index = np.all(background != no_background_color, axis=-1)
+                    selected_background = background[background_index]
+                    background_l2 = np.expand_dims(255 - np.linalg.norm(background - img, axis=2) / np.sqrt(3.), axis=2)
+                    background_mask = np.zeros((PATCH_SIZE, PATCH_SIZE,1), dtype=np.uint8)
+                    background_mask[background_index] = 255
+                    selected_background_l2 = background_l2[background_index]
+  
+                    if selected_background.size > 0:
+                        selected_background_mean = np.mean(selected_background_l2)
+                        selected_background_std  = np.std(selected_background_l2)
+                    else:
+                        selected_background_mean = np.mean(img)
+                        selected_background_std  = np.std(img)                    
+
+                    background_l2[~background_index] = \
+                        np.random.normal(loc=selected_background_mean, scale=selected_background_std, size=(PATCH_SIZE**2-(selected_background.size//3),1))
+
+                    img = np.concatenate([img, background_l2, background_mask], axis=2)
+
+                if CO:
+                    coarse = np.copy(all_coarse_padded_batch[idx-1, y_l:y_r, x_l:x_r])
+                    img = np.concatenate([img, np.expand_dims(coarse, axis=2)], axis=2)
+
+                if (input_size, input_size) != img.shape[:2]:
+                    img = cv2.resize(img, (input_size, input_size), interpolation=cv2.INTER_CUBIC)
+                
+                if img.shape[:2] != (PATCH_SIZE, PATCH_SIZE):
+                    print(id)
+
+                img = preprocess_for_model(img.astype(np.float32))
+                flip = random.randint(0,1)
+                if flip:
+                    img = np.fliplr(img)
+
+                img_batch[i,...] = copy.deepcopy(img)
+                xy_batch.append(copy.deepcopy((x_l, x_r, y_l, y_r, flip, patch_id)))
+
+                i += 1
+                patch_id += 1
+
+                if i == batch_size:
+
+                    yield(img_batch)
+                    #print("Yield:", car_id, idx)
+                    i = 0
+
+            car_xy_flip_batch.append(copy.deepcopy(xy_batch))
+
+        #print("BYE!")
+        # this is a workaround to make Keras max queue size happy 
+        while True:
+            yield(img_batch)
+            #print("Yield:", car_id, idx)
+
 
     weighted_window = get_weighted_window(PATCH_SIZE)
 
-    with open(csv_filename, 'wb') as csvfile:
+    split_preffix = ''
+    if args.test_total_splits != 1:
+        split_preffix = str(args.test_current_split) + "_of_" + str(args.test_total_splits)
+
+    with open(split_preffix + csv_filename, 'wb') as csvfile:
         writer = csv.writer(csvfile, delimiter=',', quotechar='|', quoting=csv.QUOTE_MINIMAL)
-        writer.writerow(['img', 'rle_mask'])
 
-        for car_id in tqdm(ids):
-            if X:
-                all_background = cv2.imread(join(args.test_background, '{}.png'.format(car_id)))
-                all_background_padded = np.pad(all_background, ((PATCH_SIZE // 2, PATCH_SIZE // 2), (PATCH_SIZE // 2, PATCH_SIZE // 2), (0, 0)), 'symmetric')
+        if args.test_current_split == 0:
+            writer.writerow(['img', 'rle_mask'])
 
-            for idx in range(1,17):
+        all_coarse_padded = np.zeros((16,1280+PATCH_SIZE,1918+PATCH_SIZE), dtype=np.uint8)
+
+        for car_id in tqdm(ids[args.test_current_split::args.test_total_splits]):
+
+            car_xy_flip = []
+
+            patches_probs = model.predict_generator(
+                patches_generator(car_id, all_coarse_padded, car_xy_flip),
+                steps = 16 * patches_per_image // batch_size,
+                max_queue_size = 1)
+
+            #print("FINISHED CALLING GEN")
+            #print(patches_probs.shape)
+            #print(car_xy_flip)
+            #print(len(car_xy_flip))
+
+            idx = 1
+            for xy_batch in car_xy_flip:
+
                 car_view_file = '{}_{:02d}'.format(car_id, idx) 
 
-                img = cv2.imread(join(args.test_folder, car_view_file + '.jpg'))
-                img_padded = np.pad(img, ((PATCH_SIZE // 2, PATCH_SIZE // 2), (PATCH_SIZE // 2, PATCH_SIZE // 2), (0, 0)), 'symmetric')
+                probabilities_padded = np.zeros((1280+PATCH_SIZE,1918+PATCH_SIZE), dtype=np.float32)
+                weights_padded       = np.zeros((1280+PATCH_SIZE,1918+PATCH_SIZE), dtype=np.float32)
 
-                all_coarse = cv2.imread(join(args.test_coarse, car_view_file + '.png'), cv2.IMREAD_GRAYSCALE)
-                if args.threshold_coarse:
-                    all_coarse = 255 * np.rint(all_coarse/255.).astype(np.uint8)
-        
-                all_coarse_padded = np.pad(all_coarse, ((PATCH_SIZE // 2, PATCH_SIZE // 2), (PATCH_SIZE // 2, PATCH_SIZE // 2)), 'symmetric')
-        
-                border = np.abs(np.gradient(all_coarse_mask)[1]) + np.abs(np.gradient(all_coarse_mask)[0])                
-                border = np.select([border == 0.5, border != 0.5], [1.0, border])
-
-                edges = np.nonzero(border)
-                seed = random.randint(0,1000)
-                edges_x, edges_y = edges[0], edges[1]
-                random.seed(seed)
-                random.shuffle(edges_x)
-                random.seed(seed)
-                random.shuffle(edges_y)
-                n_patches = batch_size * (patches_per_image // batch_size)
-                edges = edges_x[: n_patches], edges_y[: n_patches]
-
-                probabilities_padded = np.zeros_like(all_coarse_padded, dtype=np.float32)
-                weights_padded       = np.zeros_like(all_coarse_padded, dtype=np.float32)
-
-                i = 0
-                img_batch = np.empty((batch_size, input_size, input_size, input_channels), dtype=np.float32)
-                xy_batch   = []
-
-                for y,x in zip(edges[0], edges[1]):
-                    x = x + PATCH_SIZE // 2 
-                    y = y + PATCH_SIZE // 2
-
-                    x_l, x_r = x - PATCH_SIZE // 2, x + PATCH_SIZE // 2 
-                    y_l, y_r = y - PATCH_SIZE // 2, y + PATCH_SIZE // 2 
-
-                    img = img_padded[y_l:y_r, x_l:x_r, :]
-
-                    if X:
-                        background = np.copy(all_background_padded[y_l:y_r, x_l:x_r,:])
-
-                        no_background_color = (255,0,255)
-                        background_index = np.all(background != no_background_color, axis=-1)
-                        selected_background = background[background_index]
-                        background_l2 = np.expand_dims(255 - np.linalg.norm(background - img, axis=2) / np.sqrt(3.), axis=2)
-                        background_mask = np.zeros((PATCH_SIZE, PATCH_SIZE,1), dtype=np.uint8)
-                        background_mask[background_index] = 255
-                        selected_background_l2 = background_l2[background_index]
-      
-                        if selected_background.size > 0:
-                            selected_background_mean = np.mean(selected_background_l2)
-                            selected_background_std  = np.std(selected_background_l2)
-                        else:
-                            selected_background_mean = np.mean(img)
-                            selected_background_std  = np.std(img)                    
-
-                        background_l2[~background_index] = \
-                            np.random.normal(loc=selected_background_mean, scale=selected_background_std, size=(PATCH_SIZE**2-(selected_background.size//3),1))
-
-                        img = np.concatenate([img, background_l2, background_mask], axis=2)
-
-                    if CO:
-                        coarse = np.copy(all_coarse_padded[y_l:y_r, x_l:x_r])
-                        img = np.concatenate([img, np.expand_dims(coarse, axis=2)], axis=2)
-
-                    if (input_size, input_size) != img.shape[:2]:
-                        img = cv2.resize(img, (input_size, input_size), interpolation=cv2.INTER_CUBIC)
-                    
-                    if img.shape[:2] != (PATCH_SIZE, PATCH_SIZE):
-                        print(id)
-
-                    img = preprocess_for_model(img.astype(np.float32))
-                    flip = random.randint(0,1)
+                for (x_l, x_r, y_l, y_r, flip, patch_id) in xy_batch:
+                    #print(x_l, x_r, y_l, y_r, flip)
+                    patch_probs = np.squeeze(patches_probs[patch_id], axis=2)
                     if flip:
-                        img = np.fliplr(img)
-
-                    img_batch[i,...] = img
-                    xy_batch.append((x_l, x_r, y_l, y_r, flip))
-                    i += 1
-                    if i == batch_size:
-                        patches_probs = model.predict_on_batch(img_batch)
-
-                        for patch, (x_l, x_r, y_l, y_r, flip) in enumerate(xy_batch):
-
-                            patch_probs = np.squeeze(patches_probs[patch], axis=2)
-                            if flip:
-                                patch_probs = np.fliplr(patch_probs)    
-                            probabilities_padded[y_l:y_r, x_l:x_r] += np.multiply(patch_probs, weighted_window)
-                            weights_padded[y_l:y_r, x_l:x_r]       += weighted_window
-
-                        xy_batch   = []
-                        i = 0
+                        patch_probs = np.fliplr(patch_probs)    
+                    probabilities_padded[y_l:y_r, x_l:x_r] += np.multiply(patch_probs, weighted_window)
+                    weights_padded[y_l:y_r, x_l:x_r]       += weighted_window
 
                 zero_weights = (weights_padded == 0)
                 weights_padded[zero_weights] = 1.
                 probabilities_padded /= weights_padded
-                probabilities_padded[zero_weights] = all_coarse_padded[zero_weights] / 255.
+                probabilities_padded[zero_weights] = all_coarse_padded[idx-1, zero_weights] / 255.
 
                 probabilities = probabilities_padded[PATCH_SIZE//2:-PATCH_SIZE//2, PATCH_SIZE//2:-PATCH_SIZE//2]
 
@@ -434,6 +477,8 @@ def test_model(model, ids, X, CO, patches_per_image, batch_size, csv_filename, s
 
                 rle = rle_encode(probabilities)
                 writer.writerow([car_view_file + ".jpg", rle_to_string(rle)])
+                idx += 1
+
 
 initial_epoch = 0
 
