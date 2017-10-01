@@ -469,11 +469,10 @@ def get_resunet(input_shape=(256, 256, 3), naive_upsampling= True, full_residual
             up = identity_block(up, 3, [block, block, block*residual_filter_factor], stage=i, block='up0', preffix='', zero_padding=False, scale=scale)
             up = identity_block(up, 3, [block, block, block*residual_filter_factor], stage=i, block='up1', preffix='', zero_padding=False, scale=scale)
     
-    classify = Conv2D(1, (1, 1), activation='sigmoid')(up)
+    kernel_sigmoid = 7
+    classify = Conv2D(1, (kernel_sigmoid, kernel_sigmoid), padding='same', activation='sigmoid', name='conv_sigmoid_' + str(kernel_sigmoid))(up)
 
     model = Model(inputs=inputs, outputs=classify)
-
-    # model = to_multi_gpu(model,n_gpus=8)
 
     return model
 
