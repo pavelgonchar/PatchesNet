@@ -11,7 +11,7 @@ import csv
 import random
 
 # patch size
-N = 384
+N = 256
 ROOT_DIR = '/data/pavel/carv'
 
 def mkdir_p(path):
