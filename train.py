@@ -19,10 +19,10 @@ import itertools
 import argparse
 from multi_gpu import to_multi_gpu
 import csv
-from tps import tps
 import re
 from tqdm import tqdm
 import copy
+from threading import Lock
 
 
 ROOT_DIR = '/data/pavel/carv'
@@ -61,7 +61,7 @@ parser.add_argument('-f', '--fractional-epoch', type=int, default=1, help='Reduc
 
 # test / submission 
 parser.add_argument('-t', '--test', action='store_true', help='Test/Submit')
-parser.add_argument('-tb', '--test-background', type=str, default=join(ROOT_DIR, 'test_background_hq_09970_pavel'), help='Magic backgrounds folder in PNG format for test, e.g. -tb /data/pavel/carv/test_backgroound_hq')
+parser.add_argument('-tb', '--test-background', type=str, default=join(ROOT_DIR, 'test_background_hq_09970'), help='Magic backgrounds folder in PNG format for test, e.g. -tb /data/pavel/carv/test_backgroound_hq')
 parser.add_argument('-tc', '--test-coarse', type=str, help='Coarse mask folder in PNG format for test, e.g. -tc /data/pavel/carv/09967_test')
 parser.add_argument('-tf', '--test-folder', type=str, default=join(ROOT_DIR, 'test_hq'), help='Test folder e.g. -tc /data/pavel/carv/test_hq')
 parser.add_argument('-tppi', '--test-patches-per-image', type=int, default=128, help='Patches per image (rounded to multiple of batch size)')
@@ -215,7 +215,6 @@ def generator(ids, training = True):
                     patch_id = '{}.jpg'.format(id)
                     x,y = patches_dict[patch_id]
                     background = np.copy(all_background[y-PATCH_SIZE//2:y+PATCH_SIZE//2,x-PATCH_SIZE//2:x+PATCH_SIZE//2])
-                    #cv2.imwrite("bb.png", background)
 
                     no_background_color = (255,0,255)
                     background_index = np.all(background != no_background_color, axis=-1)
@@ -225,8 +224,6 @@ def generator(ids, training = True):
                     background_mask[background_index] = 255
                     selected_background_l2 = background_l2[background_index]
 
-                    #print(background_index.shape)
-                    #print(selected_background_l2.shape)
                     if patch_id in stats_dict:
                         selected_background_mean,selected_background_std  = stats_dict[patch_id]
                     else:                
@@ -264,7 +261,6 @@ def generator(ids, training = True):
 
                 if training:
                     if args.augmentation_tps:
-                        #print(img.shape, mask.shape)
                         img, mask = tps({'img': img, 'mask': mask, 'seed': random.randint(0,1000)})
                         img = cv2.resize(img, (input_size, input_size), interpolation=cv2.INTER_CUBIC)
                         mask = cv2.resize(mask, (input_size, input_size), interpolation=cv2.INTER_LINEAR)
@@ -317,8 +313,10 @@ def rle_to_string(runs):
 def test_model(model, ids, X, CO, patches_per_image, batch_size, csv_filename, save_pngs_to_folder, input_channels):
 
     random.seed(13)
+    batch_lock = Lock()
 
     def patches_generator(car_id, all_coarse_padded_batch, car_xy_flip_batch):
+        batch_lock.acquire()
         
         patch_id = 0
         if X:
@@ -358,7 +356,9 @@ def test_model(model, ids, X, CO, patches_per_image, batch_size, csv_filename, s
                     x += PATCH_SIZE // 2 
                     y += PATCH_SIZE // 2 
                     edge_prob = 1. / (all_coarse_padded[idx-1, y-B//2:y+B//2,x-B//2:x+B//2].mean() + 1.)
-                    edge_probs.append(edge_probs)
+                    edge_probs.append(edge_prob)
+
+                # TODO: normalize edge_probs so they add up to 1, otherwise -tsps would not work at all
 
                 random.seed(seed)
                 edges_x = np.random.choice(edges_x, size = n_patches, replace=None, p=edge_probs)
@@ -438,11 +438,11 @@ def test_model(model, ids, X, CO, patches_per_image, batch_size, csv_filename, s
 
             car_xy_flip_batch.append(copy.deepcopy(xy_batch))
 
-        #print("BYE!")
+        batch_lock.release()
+
         # this is a workaround to make Keras max queue size happy 
         while True:
             yield(img_batch)
-            #print("Yield:", car_id, idx)
 
 
     weighted_window = get_weighted_window(PATCH_SIZE)
@@ -457,17 +457,20 @@ def test_model(model, ids, X, CO, patches_per_image, batch_size, csv_filename, s
         if args.test_current_split == 0:
             writer.writerow(['img', 'rle_mask'])
 
-        all_coarse_padded = np.zeros((16,1280+PATCH_SIZE,1918+PATCH_SIZE), dtype=np.uint8)
 
         for car_id in tqdm(ids[args.test_current_split::args.test_total_splits]):
 
-            car_xy_flip = []
+            _car_xy_flip = []
+            _all_coarse_padded = np.zeros((16,1280+PATCH_SIZE,1918+PATCH_SIZE), dtype=np.uint8)
 
             patches_probs = model.predict_generator(
-                patches_generator(car_id, all_coarse_padded, car_xy_flip),
+                patches_generator(car_id, _all_coarse_padded, _car_xy_flip),
                 steps = 16 * patches_per_image // batch_size,
                 max_queue_size = 1)
 
+            batch_lock.acquire()
+            all_coarse_padded = copy.deepcopy(_all_coarse_padded)
+            car_xy_flip       = copy.deepcopy(_car_xy_flip)
             #print("FINISHED CALLING GEN")
             #print(patches_probs.shape)
             #print(car_xy_flip)
@@ -502,6 +505,7 @@ def test_model(model, ids, X, CO, patches_per_image, batch_size, csv_filename, s
                 writer.writerow([car_view_file + ".jpg", rle_to_string(rle)])
                 idx += 1
 
+            batch_lock.release()
 
 initial_epoch = 0
 
